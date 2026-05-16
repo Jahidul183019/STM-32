@@ -1,0 +1,427 @@
+/*
+ * ============================================================
+ * CSE 2206 — Lab-02 Task 5: WS2812B Bare-Metal + DMA
+ * STM32F446RE | PA8 → TIM1_CH1 (AF1) | fTIM1 = 180 MHz
+ *
+ * DMA Mapping:
+ *   DMA2 Stream1 Channel6 → TIM1_CH1
+ *
+ * Features:
+ *   • 10-colour palette demo
+ *   • HSV rainbow hue sweep
+ *   • 4-LED colour chase animation
+ *   • UART logging with polished console output
+ * ============================================================
+ */
+
+#include <stm32f446xx.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#include "helper.h"
+
+extern void SystemClock_Config(void);
+extern void USART2_Init(void);
+extern void USART2_SendString(const char *s);
+extern void TIM6_Init(void);
+extern void delay_us(uint16_t us);
+extern void delay_ms(uint32_t ms);
+
+/* =========================================================
+ * WS2812B Timing Constants
+ * ========================================================= */
+#define WS_ARR      225U
+#define WS_T1H      150U
+#define WS_T0H       75U
+#define WS_RESET     50U
+#define NUM_LEDS      5U
+
+#define PWM_BUF_SIZE   ((NUM_LEDS * 24U) + WS_RESET)
+
+static uint16_t pwmData[PWM_BUF_SIZE];
+
+typedef struct {
+    uint8_t r, g, b;
+} LED_t;
+
+static LED_t g_leds[NUM_LEDS];
+
+static volatile uint8_t datasentflag = 0;
+
+/* =========================================================
+ * GPIO Init — PA8 → TIM1_CH1 AF1
+ * ========================================================= */
+static void GPIO_WS_Init(void)
+{
+    RCC->AHB1ENR |= RCC_AHB1ENR_GPIOAEN;
+    __NOP(); __NOP();
+
+    GPIOA->MODER   = (GPIOA->MODER  & ~(3U << 16)) | (2U << 16);
+    GPIOA->OTYPER  &= ~(1U << 8);
+    GPIOA->OSPEEDR |=  (3U << 16);
+    GPIOA->PUPDR   &= ~(3U << 16);
+
+    GPIOA->AFR[1] = (GPIOA->AFR[1] & ~0xFU) | 0x1U;
+}
+
+/* =========================================================
+ * TIM1 PWM Init
+ * ========================================================= */
+static void TIM1_WS_Init(void)
+{
+    RCC->APB2ENR |= RCC_APB2ENR_TIM1EN;
+    __NOP(); __NOP();
+
+    TIM1->CR1  = 0U;
+    TIM1->PSC  = 0U;
+    TIM1->ARR  = WS_ARR;
+    TIM1->CCR1 = 0U;
+    TIM1->RCR  = 0U;
+
+    TIM1->CCMR1 = (6U << TIM_CCMR1_OC1M_Pos)
+                | TIM_CCMR1_OC1PE;
+
+    TIM1->CCER  = TIM_CCER_CC1E;
+
+    TIM1->BDTR  = TIM_BDTR_MOE;
+
+    TIM1->EGR = TIM_EGR_UG;
+    TIM1->SR  = 0U;
+}
+
+/* =========================================================
+ * DMA2 Stream1 Init
+ * ========================================================= */
+static void DMA2_WS_Init(void)
+{
+    RCC->AHB1ENR |= RCC_AHB1ENR_DMA2EN;
+    __NOP(); __NOP();
+
+    DMA2_Stream1->CR &= ~DMA_SxCR_EN;
+    while (DMA2_Stream1->CR & DMA_SxCR_EN) {}
+
+    DMA2->LIFCR = DMA_LIFCR_CTCIF1  |
+                  DMA_LIFCR_CHTIF1  |
+                  DMA_LIFCR_CTEIF1  |
+                  DMA_LIFCR_CDMEIF1 |
+                  DMA_LIFCR_CFEIF1;
+
+    DMA2_Stream1->CR =
+          (6U << 25U)
+        | (2U << 16U)
+        | (1U << 13U)
+        | (1U << 11U)
+        | (1U << 10U)
+        | (1U <<  6U)
+        | (1U <<  4U);
+
+    DMA2_Stream1->PAR = (uint32_t)&TIM1->CCR1;
+
+    DMA2_Stream1->FCR &= ~DMA_SxFCR_DMDIS;
+
+    NVIC_SetPriority(DMA2_Stream1_IRQn, 0U);
+    NVIC_EnableIRQ(DMA2_Stream1_IRQn);
+}
+
+/* =========================================================
+ * DMA IRQ Handler
+ * ========================================================= */
+void DMA2_Stream1_IRQHandler(void)
+{
+    if (DMA2->LISR & DMA_LISR_TCIF1)
+    {
+        DMA2->LIFCR = DMA_LIFCR_CTCIF1;
+
+        TIM1->CR1  &= ~TIM_CR1_CEN;
+
+        DMA2_Stream1->CR &= ~DMA_SxCR_EN;
+
+        TIM1->DIER &= ~TIM_DIER_CC1DE;
+
+        datasentflag = 1;
+    }
+}
+
+/* =========================================================
+ * WS2812 Send
+ * ========================================================= */
+static void WS2812B_Send(void)
+{
+    uint32_t idx = 0;
+
+    for (uint32_t led = 0; led < NUM_LEDS; led++)
+    {
+        uint32_t color = ((uint32_t)g_leds[led].g << 16)
+                       | ((uint32_t)g_leds[led].r <<  8)
+                       |  (uint32_t)g_leds[led].b;
+
+        for (int bit = 23; bit >= 0; bit--)
+        {
+            pwmData[idx++] =
+                (color & (1U << bit)) ? WS_T1H : WS_T0H;
+        }
+    }
+
+    for (uint32_t i = 0; i < WS_RESET; i++)
+        pwmData[idx++] = 0U;
+
+    TIM1->CR1 &= ~TIM_CR1_CEN;
+
+    DMA2_Stream1->CR &= ~DMA_SxCR_EN;
+    while (DMA2_Stream1->CR & DMA_SxCR_EN) {}
+
+    DMA2->LIFCR = DMA_LIFCR_CTCIF1  |
+                  DMA_LIFCR_CHTIF1  |
+                  DMA_LIFCR_CTEIF1  |
+                  DMA_LIFCR_CDMEIF1 |
+                  DMA_LIFCR_CFEIF1;
+
+    DMA2_Stream1->M0AR = (uint32_t)pwmData;
+    DMA2_Stream1->NDTR = idx;
+
+    TIM1->CCR1 = 0U;
+    TIM1->CNT  = 0U;
+    TIM1->SR   = 0U;
+
+    TIM1->DIER |= TIM_DIER_CC1DE;
+
+    DMA2_Stream1->CR |= DMA_SxCR_EN;
+
+    TIM1->CR1 |= TIM_CR1_CEN;
+
+    while (!datasentflag) {}
+    datasentflag = 0;
+}
+
+/* =========================================================
+ * LED Helper Functions
+ * ========================================================= */
+static void WS2812_SetAll(uint8_t r, uint8_t g, uint8_t b)
+{
+    for (uint32_t i = 0; i < NUM_LEDS; i++)
+        g_leds[i] = (LED_t){r, g, b};
+
+    WS2812B_Send();
+}
+
+/* =========================================================
+ * HSV → RGB
+ * ========================================================= */
+static void WS2812_SetHue(uint16_t H)
+{
+    H = H % 360U;
+
+    uint8_t seg  = (uint8_t)(H / 60U);
+    uint8_t frac = (uint8_t)(H % 60U);
+
+    uint8_t q = (uint8_t)(255U * (60U - frac) / 60U);
+    uint8_t t = (uint8_t)(255U * frac / 60U);
+
+    uint8_t r, g, b;
+
+    switch (seg)
+    {
+        case 0: r=255; g=t;   b=0;   break;
+        case 1: r=q;   g=255; b=0;   break;
+        case 2: r=0;   g=255; b=t;   break;
+        case 3: r=0;   g=q;   b=255; break;
+        case 4: r=t;   g=0;   b=255; break;
+        case 5: r=255; g=0;   b=q;   break;
+        default:r=0;   g=0;   b=0;   break;
+    }
+
+    WS2812_SetAll(r, g, b);
+}
+
+/* =========================================================
+ * Colour Palette
+ * ========================================================= */
+typedef struct {
+    const char *name;
+    uint8_t r, g, b;
+} Colour_t;
+
+static const Colour_t palette[] =
+{
+    {"Red",        255,   0,   0},
+    {"Green",        0, 255,   0},
+    {"Blue",         0,   0, 255},
+    {"Yellow",     255, 255,   0},
+    {"Cyan",         0, 255, 255},
+    {"Magenta",    255,   0, 255},
+    {"White",      255, 255, 255},
+    {"Warm White", 255, 200,  80},
+    {"DU Blue",     31,  56, 100},
+    {"Off",          0,   0,   0},
+};
+
+#define PALETTE_COUNT  (sizeof(palette) / sizeof(palette[0]))
+
+/* =========================================================
+ * MAIN
+ * ========================================================= */
+int main(void)
+{
+    char buf[128];
+
+    SystemClock_Config();
+    USART2_Init();
+    TIM6_Init();
+
+    GPIO_WS_Init();
+    TIM1_WS_Init();
+    DMA2_WS_Init();
+
+    USART2_SendString(
+    "\r\n"
+    "============================================================\r\n"
+    "      CSE 2206 — Lab-02 Task 5 : WS2812B + DMA\r\n"
+    "============================================================\r\n"
+    "Board      : STM32F446RE Nucleo-64\r\n"
+    "Protocol   : WS2812B (NeoPixel)\r\n"
+    "Interface  : TIM1_CH1 PWM + DMA2 Stream1\r\n"
+    "PWM Pin    : PA8  (AF1)\r\n"
+    "LED Count  : 5\r\n"
+    "Timer CLK  : 180 MHz\r\n"
+    "============================================================\r\n"
+    "\r\n"
+    );
+
+    WS2812_SetAll(0,0,0);
+    delay_ms(100U);
+
+    /* ===================================================== */
+    /* Requirement 1                                         */
+    /* ===================================================== */
+
+    USART2_SendString(
+    "\r\n"
+    "------------------------------------------------------------\r\n"
+    "[REQ-1] 10-Colour Palette Demonstration\r\n"
+    "------------------------------------------------------------\r\n"
+    "Mode        : Static Full-Strip Colour\r\n"
+    "Delay       : 1000 ms per colour\r\n"
+    "LED Target  : All 5 LEDs\r\n"
+    "------------------------------------------------------------\r\n"
+    "\r\n"
+    );
+
+    for (uint32_t i = 0; i < PALETTE_COUNT; i++)
+    {
+        WS2812_SetAll(
+            palette[i].r,
+            palette[i].g,
+            palette[i].b
+        );
+
+        snprintf(buf, sizeof(buf),
+            "[%02lu/%02lu] %-12s | "
+            "RGB=(%3u,%3u,%3u) | "
+            "GRB=[0x%02X 0x%02X 0x%02X]\r\n",
+            (unsigned long)(i + 1U),
+            (unsigned long)PALETTE_COUNT,
+            palette[i].name,
+            palette[i].r,
+            palette[i].g,
+            palette[i].b,
+            palette[i].g,
+            palette[i].r,
+            palette[i].b);
+
+        USART2_SendString(buf);
+
+        delay_ms(1000U);
+    }
+
+    /* ===================================================== */
+    /* Requirement 2                                         */
+    /* ===================================================== */
+
+    USART2_SendString(
+    "\r\n"
+    "------------------------------------------------------------\r\n"
+    "[REQ-2] HSV Hue Sweep Demonstration\r\n"
+    "------------------------------------------------------------\r\n"
+    "Hue Range   : 0° → 359°\r\n"
+    "Step Size   : 3°\r\n"
+    "Frame Delay : 25 ms\r\n"
+    "Effect      : Smooth Rainbow Transition\r\n"
+    "------------------------------------------------------------\r\n"
+    "\r\n"
+    );
+
+    for (uint16_t h = 0; h < 360U; h += 3U)
+    {
+        WS2812_SetHue(h);
+
+        snprintf(buf, sizeof(buf),
+            "Hue Angle : %3u deg\r\n",
+            h);
+
+        USART2_SendString(buf);
+
+        delay_ms(25U);
+    }
+
+    WS2812_SetAll(0,0,0);
+
+    USART2_SendString(
+    "\r\n"
+    "[OK] Hue Sweep Complete.\r\n"
+    );
+
+    /* ===================================================== */
+    /* Requirement 3                                         */
+    /* ===================================================== */
+
+    USART2_SendString(
+    "\r\n"
+    "------------------------------------------------------------\r\n"
+    "[REQ-3] Colour Chase Animation\r\n"
+    "------------------------------------------------------------\r\n"
+    "Active LEDs : 4\r\n"
+    "Rounds      : 3\r\n"
+    "Step Delay  : 200 ms\r\n"
+    "Pattern     : Rotating RED LED\r\n"
+    "LED-5       : Always OFF\r\n"
+    "------------------------------------------------------------\r\n"
+    "\r\n"
+    );
+
+    for (int round = 0; round < 3; round++)
+    {
+        for (uint32_t active = 0; active < 4U; active++)
+        {
+            for (uint32_t j = 0; j < NUM_LEDS; j++)
+                g_leds[j] = (LED_t){0,0,0};
+
+            g_leds[active] = (LED_t){255,0,0};
+
+            WS2812B_Send();
+
+            snprintf(buf, sizeof(buf),
+                "[Round %d/3] Active LED --> LED-%lu\r\n",
+                round + 1,
+                (unsigned long)(active + 1U));
+
+            USART2_SendString(buf);
+
+            delay_ms(200U);
+        }
+    }
+
+    WS2812_SetAll(0,0,0);
+
+    USART2_SendString(
+    "\r\n"
+    "============================================================\r\n"
+    "               ALL DEMONSTRATIONS COMPLETE\r\n"
+    "============================================================\r\n"
+    "\r\n"
+    );
+
+    while (1)
+    {
+
+    }
+}

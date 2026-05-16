@@ -1,0 +1,10 @@
+2026-04-12 20:57:31,038 [INFO] Activator:176 - 
+
+
+2026-04-12 20:57:31,039 [INFO] Activator:177 - !SESSION log4j initialized
+2026-04-12 20:57:32,207 [INFO] LogOutputStream:77 - [STDOUT_REDIRECT] 
+2026-04-12 20:57:32,311 [INFO] LogOutputStream:77 - [STDOUT_REDIRECT] Start the detection of the machine's architecture
+2026-04-12 20:57:32,316 [INFO] LogOutputStream:77 - [STDOUT_REDIRECT] use arm architecture
+2026-04-12 20:57:32,316 [INFO] LogOutputStream:77 - [STDOUT_REDIRECT] Architecture: Apple Silicon (ARM64)
+2026-04-12 20:59:04,375 [ERROR] LogOutputStream:75 - [STDERR_REDIRECT] 
+2026-04-12 21:07:40,614 [ERROR] ConfigurationRetriever:142 - IOException on connection: Read timed out

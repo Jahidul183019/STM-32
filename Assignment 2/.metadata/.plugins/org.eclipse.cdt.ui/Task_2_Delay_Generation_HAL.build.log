@@ -1,0 +1,10 @@
+16:39:52 **** Incremental Build of configuration Debug for project Task_2_Delay_Generation_HAL ****
+make -j9 all 
+arm-none-eabi-size  Task_2_Delay_Generation_HAL.elf 
+   text	   data	    bss	    dec	    hex	filename
+  14476	     92	   2116	  16684	   412c	Task_2_Delay_Generation_HAL.elf
+Finished building: default.size.stdout
+ 
+
+16:39:52 Build Finished. 0 errors, 0 warnings. (took 82ms)
+

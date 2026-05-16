@@ -1,0 +1,12 @@
+/Users/md.jahidulislam/STM32CubeIDE/Assignment 2/Task_6_Extension_Buzzer_Servo_or_Input Capture/CMSIS/Include/core_cm4.h:1684:22:__NVIC_EnableIRQ	2
+/Users/md.jahidulislam/STM32CubeIDE/Assignment 2/Task_6_Extension_Buzzer_Servo_or_Input Capture/CMSIS/Include/core_cm4.h:1814:22:__NVIC_SetPriority	2
+../Src/main.c:25:6:SystemClock_Config	6
+../Src/main.c:93:13:USART2_Init	1
+../Src/main.c:121:13:USART2_SendString	4
+../Src/main.c:146:13:TIM2_Init	1
+../Src/main.c:184:6:TIM2_IRQHandler	2
+../Src/main.c:199:13:delay_ms	2
+../Src/main.c:222:13:TIM4_PWM_Init	1
+../Src/main.c:263:13:TIM4_PlayNote	1
+../Src/main.c:293:13:REST	1
+../Src/main.c:368:5:main	3

@@ -1,0 +1,287 @@
+/*
+ * ============================================================================
+ * CSE 2206 — Lab-02 Task 5: WS2812B Bare-Metal + DMA
+ * * HARDWARE SETUP:
+ * - MCU: STM32F446RE (180 MHz System Clock)
+ * - Pin: PA8 configured as TIM1_CH1 (AF1)
+ * - LED: WS2812B (Requires specific High/Low pulse timings)
+ * * TIMING RATIONALE (fTIM1 = 180 MHz, 1 tick = 5.55ns):
+ * - ARR = 225: Total Period = 226 ticks = 1.256 µs (Spec: 1.25 µs)
+ * - T1H = 150: High Time (1) = 0.833 µs (Spec: 0.80 µs)
+ * - T0H =  75: High Time (0) = 0.417 µs (Spec: 0.40 µs)
+ * - Reset: > 50 µs (achieved by 50 trailing zero-duty cycles)
+ * ============================================================================
+ */
+
+#include <stm32f446xx.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+
+/* --- Configuration Constants --- */
+#define WS_ARR          225U
+#define WS_T1H          150U
+#define WS_T0H           75U
+#define WS_RESET        50U
+#define NUM_LEDS         5U
+
+/* --- ANSI Terminal Colors for Console --- */
+#define CLR_HEADER      "\033[1;36m"
+#define CLR_SUCCESS     "\033[1;32m"
+#define CLR_INFO        "\033[1;33m"
+#define CLR_RESET       "\033[0m"
+
+/* --- Data Structures --- */
+#define PWM_BUF_SIZE    ((NUM_LEDS * 24U) + WS_RESET)
+
+static uint16_t pwmData[PWM_BUF_SIZE];      // DMA Source Buffer
+typedef struct { uint8_t r, g, b; } LED_t;  // RGB Pixel Structure
+static LED_t g_leds[NUM_LEDS];              // LED Array State
+static volatile uint8_t datasentflag = 0;   // DMA Completion Flag
+
+/* --- Forward Declarations --- */
+void SystemClock_Config(void);
+void USART2_Init(void);
+void USART2_SendString(const char *s);
+void delay_ms(uint32_t ms);
+
+/* =========================================================
+ * SECTION 1: Peripheral Initialization
+ * ========================================================= */
+
+/**
+ * @brief Initialize PA8 in Alternate Function mode for TIM1_CH1
+ */
+static void GPIO_WS_Init(void) {
+    RCC->AHB1ENR |= RCC_AHB1ENR_GPIOAEN;
+
+    // PA8: Mode = 10 (AF), Speed = 11 (Very High)
+    GPIOA->MODER   = (GPIOA->MODER  & ~(3U << 16)) | (2U << 16);
+    GPIOA->OSPEEDR |= (3U << 16);
+
+    // PA8 -> AF1 (TIM1_CH1)
+    GPIOA->AFR[1]  = (GPIOA->AFR[1] & ~0xFU) | 0x1U;
+}
+
+/**
+ * @brief Initialize TIM1 for PWM Generation
+ */
+static void TIM1_WS_Init(void) {
+    RCC->APB2ENR |= RCC_APB2ENR_TIM1EN;
+
+    TIM1->PSC = 0U;          // No prescaler (180MHz)
+    TIM1->ARR = WS_ARR;      // Set period for 800kHz
+
+    // CH1: PWM Mode 1 (110) + Preload Enable
+    TIM1->CCMR1 = (6U << TIM_CCMR1_OC1M_Pos) | TIM_CCMR1_OC1PE;
+
+    // Enable Capture/Compare 1 Output
+    TIM1->CCER = TIM_CCER_CC1E;
+
+    // Main Output Enable (Crucial for Advanced Timers like TIM1)
+    TIM1->BDTR = TIM_BDTR_MOE;
+
+    // Trigger update to load registers
+    TIM1->EGR = TIM_EGR_UG;
+}
+
+/**
+ * @brief Initialize DMA2 Stream 1 Channel 6 for TIM1_CH1 Transfer
+ */
+static void DMA2_WS_Init(void) {
+    RCC->AHB1ENR |= RCC_AHB1ENR_DMA2EN;
+
+    // Ensure stream is disabled before config
+    DMA2_Stream1->CR &= ~DMA_SxCR_EN;
+    while (DMA2_Stream1->CR & DMA_SxCR_EN);
+
+    DMA2->LIFCR = 0x3DU << 6; // Clear all interrupt flags for Stream 1
+
+    /* Config:
+     * CHSEL(6), Priority(High), MSIZE(16-bit), PSIZE(16-bit),
+     * MINC(Enabled), DIR(Mem-to-Peri), TCIE(Interrupt on complete)
+     */
+    DMA2_Stream1->CR = (6U << 25) | (2U << 16) | (1U << 13) | (1U << 11) | (1U << 10) | (1U << 6) | (1U << 4);
+
+    // Destination is the Capture/Compare Register 1
+    DMA2_Stream1->PAR = (uint32_t)&TIM1->CCR1;
+
+    NVIC_SetPriority(DMA2_Stream1_IRQn, 0);
+    NVIC_EnableIRQ(DMA2_Stream1_IRQn);
+}
+
+/**
+ * @brief DMA Interrupt Handler: Cleanup after frame transmission
+ */
+void DMA2_Stream1_IRQHandler(void) {
+    if (DMA2->LISR & DMA_LISR_TCIF1) {
+        DMA2->LIFCR = DMA_LIFCR_CTCIF1; // Clear Transfer Complete flag
+
+        TIM1->CR1  &= ~TIM_CR1_CEN;     // Stop Timer
+        DMA2_Stream1->CR &= ~DMA_SxCR_EN; // Disable DMA Stream
+        TIM1->DIER &= ~TIM_DIER_CC1DE;  // Disable DMA request from Timer
+
+        datasentflag = 1;               // Unblock the main loop
+    }
+}
+
+/* =========================================================
+ * SECTION 2: WS2812B Logic
+ * ========================================================= */
+
+/**
+ * @brief Encodes RGB data into PWM duty cycles and triggers DMA
+ */
+static void WS2812B_Send(void) {
+    uint32_t idx = 0;
+
+    // Encode LED data (GRB Format)
+    for (uint32_t led = 0; led < NUM_LEDS; led++) {
+        uint32_t color = (g_leds[led].g << 16) | (g_leds[led].r << 8) | g_leds[led].b;
+        for (int bit = 23; bit >= 0; bit--) {
+            // Logic 1: High duty cycle, Logic 0: Low duty cycle
+            pwmData[idx++] = (color & (1U << bit)) ? WS_T1H : WS_T0H;
+        }
+    }
+
+    // Add Reset Pulse (trailing zeros)
+    for (uint32_t i = 0; i < WS_RESET; i++) pwmData[idx++] = 0;
+
+    // Ready DMA Transfer
+    DMA2_Stream1->M0AR = (uint32_t)pwmData;
+    DMA2_Stream1->NDTR = idx;
+
+    TIM1->SR = 0;
+    TIM1->DIER |= TIM_DIER_CC1DE;   // Enable DMA request
+    DMA2_Stream1->CR |= DMA_SxCR_EN; // Start DMA
+    TIM1->CR1 |= TIM_CR1_CEN;       // Start Timer
+
+    // Wait for ISR to signal completion
+    while (!datasentflag);
+    datasentflag = 0;
+}
+
+/**
+ * @brief Helper: Set color for all LEDs
+ */
+static void WS2812_SetAll(uint8_t r, uint8_t g, uint8_t b) {
+    for (int i = 0; i < NUM_LEDS; i++) g_leds[i] = (LED_t){r, g, b};
+    WS2812B_Send();
+}
+
+/**
+ * @brief Helper: Convert Hue (0-359) to RGB
+ */
+static void WS2812_SetHue(uint16_t H) {
+    H %= 360;
+    uint8_t r, g, b, sector = H / 60, f = H % 60;
+    uint8_t q = (255 * (60 - f)) / 60, t = (255 * f) / 60;
+
+    if(sector==0){r=255;g=t;b=0;}      else if(sector==1){r=q;g=255;b=0;}
+    else if(sector==2){r=0;g=255;b=t;} else if(sector==3){r=0;g=q;b=255;}
+    else if(sector==4){r=t;g=0;b=255;} else {r=255;g=0;b=q;}
+
+    WS2812_SetAll(r, g, b);
+}
+
+/* =========================================================
+ * SECTION 3: Main Execution Loop
+ * ========================================================= */
+
+int main(void) {
+    char buf[128];
+    SystemClock_Config();
+    USART2_Init();
+    GPIO_WS_Init();
+    TIM1_WS_Init();
+    DMA2_WS_Init();
+
+    USART2_SendString("\033[2J\033[H"); // Clear terminal
+    USART2_SendString(CLR_HEADER "=== STM32F446 WS2812B DMA ENGINE ACTIVE ===\r\n" CLR_RESET);
+
+    // Initial clear
+    WS2812_SetAll(0, 0, 0);
+
+    while (1) {
+        /* Task 1: Palette Sweep */
+        USART2_SendString(CLR_INFO "\r\n[1/3] Displaying Colour Palette...\r\n" CLR_RESET);
+        const struct { const char *n; uint8_t r, g, b; } pal[] = {
+            {"RED", 255, 0, 0}, {"GREEN", 0, 255, 0}, {"BLUE", 0, 0, 255},
+            {"YELLOW", 255, 255, 0}, {"WHITE", 255, 255, 255}
+        };
+        for (int i = 0; i < 5; i++) {
+            WS2812_SetAll(pal[i].r, pal[i].g, pal[i].b);
+            snprintf(buf, sizeof(buf), "  " CLR_SUCCESS "-> " CLR_RESET "Active: %s\r\n", pal[i].n);
+            USART2_SendString(buf);
+            delay_ms(1000);
+        }
+
+        /* Task 2: Rainbow Fade */
+        USART2_SendString(CLR_INFO "\r\n[2/3] Performing Hue Sweep...\r\n" CLR_RESET);
+        for (int h = 0; h < 360; h += 3) {
+            WS2812_SetHue(h);
+            delay_ms(20);
+        }
+        USART2_SendString("  " CLR_SUCCESS "Done." CLR_RESET "\r\n");
+
+        /* Task 3: Colour Chase */
+        USART2_SendString(CLR_INFO "\r\n[3/3] Running LED Chase Animation...\r\n" CLR_RESET);
+        for (int round = 0; round < 3; round++) {
+            for (int active = 0; active < 4; active++) {
+                for (int j = 0; j < NUM_LEDS; j++) g_leds[j] = (LED_t){0, 0, 0};
+                g_leds[active] = (LED_t){255, 0, 0};
+                WS2812B_Send();
+                USART2_SendString("  [ " CLR_SUCCESS "● " CLR_RESET "○ ○ ○ ○ ]\r"); // Simple console visual
+                delay_ms(200);
+            }
+        }
+        USART2_SendString("\r\nSequence looping...\r\n");
+    }
+}
+
+/* =========================================================
+ * SECTION 4: System Helper Implementations
+ * ========================================================= */
+
+void SystemClock_Config(void) {
+    // Enable HSE
+    RCC->CR |= RCC_CR_HSEON;
+    while(!(RCC->CR & RCC_CR_HSERDY));
+
+    // Set Power Level
+    RCC->APB1ENR |= RCC_APB1ENR_PWREN;
+    PWR->CR |= PWR_CR_VOS;
+
+    // Flash Latency for 180MHz
+    FLASH->ACR = FLASH_ACR_ICEN | FLASH_ACR_DCEN | FLASH_ACR_LATENCY_5WS;
+
+    // PLL: M=8, N=360, P=2 -> 180MHz
+    RCC->PLLCFGR = (8U << 0) | (360U << 6) | (0U << 16) | RCC_PLLCFGR_PLLSRC_HSE;
+    RCC->CR |= RCC_CR_PLLON;
+    while(!(RCC->CR & RCC_CR_PLLRDY));
+
+    // Switch to PLL
+    RCC->CFGR |= RCC_CFGR_SW_PLL;
+    while((RCC->CFGR & RCC_CFGR_SWS) != RCC_CFGR_SWS_PLL);
+}
+
+void USART2_Init(void) {
+    RCC->AHB1ENR |= RCC_AHB1ENR_GPIOAEN;
+    RCC->APB1ENR |= RCC_APB1ENR_USART2EN;
+    GPIOA->MODER |= (2U << 4) | (2U << 6); // PA2, PA3 AF mode
+    GPIOA->AFR[0] |= (7U << 8) | (7U << 12); // AF7 for USART2
+    USART2->BRR = 0x16D; // 115200 Baud @ 45MHz APB1
+    USART2->CR1 = USART_CR1_TE | USART_CR1_UE;
+}
+
+void USART2_SendString(const char *s) {
+    while(*s) {
+        while(!(USART2->SR & USART_SR_TXE));
+        USART2->DR = *s++;
+    }
+}
+
+void delay_ms(uint32_t ms) {
+    // Estimated loop delay for 180MHz
+    for(volatile uint32_t i = 0; i < ms * 22000; i++);
+}

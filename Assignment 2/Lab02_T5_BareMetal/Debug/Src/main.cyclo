@@ -1,0 +1,10 @@
+/Users/md.jahidulislam/STM32CubeIDE/Assignment 2/Task_5_BareMetal/CMSIS/Include/core_cm4.h:1684:22:__NVIC_EnableIRQ	2
+/Users/md.jahidulislam/STM32CubeIDE/Assignment 2/Task_5_BareMetal/CMSIS/Include/core_cm4.h:1814:22:__NVIC_SetPriority	2
+../Src/main.c:102:13:GPIO_WS_Init	1
+../Src/main.c:133:13:TIM1_WS_Init	1
+../Src/main.c:191:13:DMA2_WS_Init	2
+../Src/main.c:246:6:DMA2_Stream1_IRQHandler	2
+../Src/main.c:287:13:WS2812B_Send	7
+../Src/main.c:354:13:WS2812_SetAll	2
+../Src/main.c:386:13:WS2812_SetHue	7
+../Src/main.c:466:5:main	6

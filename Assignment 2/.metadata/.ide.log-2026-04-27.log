@@ -1,0 +1,27 @@
+2026-04-27 19:35:26,628 [INFO] Activator:176 - 
+
+
+2026-04-27 19:35:26,631 [INFO] Activator:177 - !SESSION log4j initialized
+2026-04-27 19:35:29,685 [INFO] LogOutputStream:77 - [STDOUT_REDIRECT] 
+2026-04-27 19:35:29,930 [INFO] LogOutputStream:77 - [STDOUT_REDIRECT] Start the detection of the machine's architecture
+2026-04-27 19:35:29,942 [INFO] LogOutputStream:77 - [STDOUT_REDIRECT] use arm architecture
+2026-04-27 19:35:29,942 [INFO] LogOutputStream:77 - [STDOUT_REDIRECT] Architecture: Apple Silicon (ARM64)
+2026-04-27 19:47:47,237 [ERROR] LogOutputStream:75 - [STDERR_REDIRECT] 
+2026-04-27 19:54:02,712 [INFO] Activator:176 - 
+
+
+2026-04-27 19:54:02,713 [INFO] Activator:177 - !SESSION log4j initialized
+2026-04-27 19:54:05,686 [INFO] LogOutputStream:77 - [STDOUT_REDIRECT] 
+2026-04-27 19:54:05,780 [INFO] LogOutputStream:77 - [STDOUT_REDIRECT] Start the detection of the machine's architecture
+2026-04-27 19:54:05,788 [INFO] LogOutputStream:77 - [STDOUT_REDIRECT] use arm architecture
+2026-04-27 19:54:05,788 [INFO] LogOutputStream:77 - [STDOUT_REDIRECT] Architecture: Apple Silicon (ARM64)
+2026-04-27 19:54:20,014 [ERROR] LogOutputStream:75 - [STDERR_REDIRECT] 
+2026-04-27 20:07:27,053 [INFO] Activator:176 - 
+
+
+2026-04-27 20:07:27,054 [INFO] Activator:177 - !SESSION log4j initialized
+2026-04-27 20:07:30,439 [INFO] LogOutputStream:77 - [STDOUT_REDIRECT] 
+2026-04-27 20:07:30,665 [INFO] LogOutputStream:77 - [STDOUT_REDIRECT] Start the detection of the machine's architecture
+2026-04-27 20:07:30,673 [INFO] LogOutputStream:77 - [STDOUT_REDIRECT] use arm architecture
+2026-04-27 20:07:30,673 [INFO] LogOutputStream:77 - [STDOUT_REDIRECT] Architecture: Apple Silicon (ARM64)
+2026-04-27 20:19:20,535 [ERROR] LogOutputStream:75 - [STDERR_REDIRECT] 

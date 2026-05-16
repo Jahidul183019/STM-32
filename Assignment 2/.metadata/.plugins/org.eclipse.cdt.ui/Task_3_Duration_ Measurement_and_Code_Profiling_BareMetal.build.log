@@ -1,0 +1,10 @@
+19:01:20 **** Incremental Build of configuration Debug for project Task_3_Duration_ Measurement_and_Code_Profiling_BareMetal ****
+make -j9 all 
+arm-none-eabi-size  Task_3_Duration_\ Measurement_and_Code_Profiling_BareMetal.elf 
+   text	   data	    bss	    dec	    hex	filename
+   6124	     80	   3320	   9524	   2534	Task_3_Duration_ Measurement_and_Code_Profiling_BareMetal.elf
+Finished building: default.size.stdout
+ 
+
+19:01:21 Build Finished. 0 errors, 0 warnings. (took 86ms)
+

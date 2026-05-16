@@ -1,0 +1,6 @@
+../Src/main.c:12:6:SystemClock_Config	6
+../Src/main.c:71:6:USART2_Init	1
+../Src/main.c:97:6:USART2_SendChar	2
+../Src/main.c:102:6:USART2_SendString	2
+../Src/main.c:106:6:USART2_RecvChar	2
+../Src/main.c:111:5:main	2

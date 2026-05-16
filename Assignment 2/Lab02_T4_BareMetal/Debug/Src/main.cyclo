@@ -1,0 +1,11 @@
+/Users/md.jahidulislam/STM32CubeIDE/Assignment 2/Task_4_PWM_Generation_and_LED_Brightness_Control_BareMetal/CMSIS/Include/core_cm4.h:1684:22:__NVIC_EnableIRQ	2
+/Users/md.jahidulislam/STM32CubeIDE/Assignment 2/Task_4_PWM_Generation_and_LED_Brightness_Control_BareMetal/CMSIS/Include/core_cm4.h:1814:22:__NVIC_SetPriority	2
+../Src/main.c:34:6:SystemClock_Config_16MHz	3
+../Src/main.c:48:6:TIM2_Init	1
+../Src/main.c:65:6:TIM2_IRQHandler	2
+../Src/main.c:72:6:delay_ms	2
+../Src/main.c:80:6:USART2_Init	1
+../Src/main.c:95:6:USART2_SendString	4
+../Src/main.c:106:6:TIM3_PWM_Init	1
+../Src/main.c:142:6:PWM_SetDuty	2
+../Src/main.c:150:5:main	4

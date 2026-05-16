@@ -1,0 +1,10 @@
+19:35:07 **** Incremental Build of configuration Debug for project Task_6_Extension_Buzzer_BareMetal ****
+make -j9 all 
+arm-none-eabi-size  Task_6_Extension_Buzzer_BareMetal.elf 
+   text	   data	    bss	    dec	    hex	filename
+   5808	     80	   1904	   7792	   1e70	Task_6_Extension_Buzzer_BareMetal.elf
+Finished building: default.size.stdout
+ 
+
+19:35:08 Build Finished. 0 errors, 0 warnings. (took 159ms)
+

@@ -1,0 +1,10 @@
+19:23:40 **** Incremental Build of configuration Debug for project Task4_PWM_HAL ****
+make -j9 all 
+arm-none-eabi-size  Task4_PWM_HAL.elf 
+   text	   data	    bss	    dec	    hex	filename
+  16976	     92	   2116	  19184	   4af0	Task4_PWM_HAL.elf
+Finished building: default.size.stdout
+ 
+
+19:23:40 Build Finished. 0 errors, 0 warnings. (took 95ms)
+

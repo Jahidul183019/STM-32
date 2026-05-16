@@ -1,0 +1,10 @@
+18:49:30 **** Incremental Build of configuration Debug for project Task_2_HAL ****
+make -j9 all 
+arm-none-eabi-size  Task_2_HAL.elf 
+   text	   data	    bss	    dec	    hex	filename
+  13612	     92	   2044	  15748	   3d84	Task_2_HAL.elf
+Finished building: default.size.stdout
+ 
+
+18:49:30 Build Finished. 0 errors, 0 warnings. (took 75ms)
+

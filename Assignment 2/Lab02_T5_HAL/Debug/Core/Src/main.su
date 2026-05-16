@@ -1,0 +1,17 @@
+../Core/Src/main.c:127:6:UART_Print	16	static
+../Core/Src/main.c:135:6:UART_Printf	272	static
+../Core/Src/main.c:154:6:delay_us	16	static
+../Core/Src/main.c:165:6:WS2812_Send	8	static
+../Core/Src/main.c:183:6:WS2812_SetColor	24	static
+../Core/Src/main.c:201:6:WS2812_SetChain	32	static
+../Core/Src/main.c:241:6:HAL_TIM_PWM_PulseFinishedCallback	16	static
+../Core/Src/main.c:255:8:HSV_ToRGB	32	static
+../Core/Src/main.c:313:5:main	80	static
+../Core/Src/main.c:482:6:SystemClock_Config	88	static
+../Core/Src/main.c:537:13:MX_TIM1_Init	96	static
+../Core/Src/main.c:612:13:MX_TIM6_Init	16	static
+../Core/Src/main.c:650:13:MX_USART2_UART_Init	8	static
+../Core/Src/main.c:681:13:MX_DMA_Init	16	static
+../Core/Src/main.c:699:13:MX_GPIO_Init	16	static
+../Core/Src/main.c:714:6:HAL_TIM_PWM_MspInit	24	static
+../Core/Src/main.c:729:6:Error_Handler	4	static,ignoring_inline_asm

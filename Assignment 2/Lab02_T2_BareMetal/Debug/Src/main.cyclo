@@ -1,0 +1,12 @@
+../Src/main.c:23:6:SystemClock_Config	6
+../Src/main.c:90:13:USART2_Init	1
+../Src/main.c:124:13:USART2_SendString	4
+../Src/main.c:146:13:TIM6_Init	1
+../Src/main.c:183:13:delay_us	2
+../Src/main.c:200:13:delay_ms	2
+../Src/main.c:212:13:delay_s	2
+../Src/main.c:226:13:delay_hms	1
+../Src/main.c:238:13:LED_Init	1
+../Src/main.c:245:20:LED_On	1
+../Src/main.c:246:20:LED_Off	1
+../Src/main.c:253:5:main	2

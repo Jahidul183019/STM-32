@@ -1,0 +1,6 @@
+../Src/helper.c:11:6:SystemClock_Config	6
+../Src/helper.c:79:6:USART2_Init	1
+../Src/helper.c:115:6:USART2_SendString	4
+../Src/helper.c:137:6:TIM6_Init	1
+../Src/helper.c:173:6:delay_us	2
+../Src/helper.c:187:6:delay_ms	2

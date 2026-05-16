@@ -1,0 +1,14 @@
+19:46:32 **** Incremental Build of configuration Debug for project Task5_HAL ****
+make -j9 all 
+arm-none-eabi-size  Task5_HAL.elf 
+   text	   data	    bss	    dec	    hex	filename
+  21464	     92	   2572	  24128	   5e40	Task5_HAL.elf
+Finished building: default.size.stdout
+ 
+19:46:33 **** Incremental Build of configuration Debug for project Task5_HAL ****
+make -j9 all 
+arm-none-eabi-size  Task5_HAL.elf 
+   text	   data	    bss	    dec	    hex	filename
+  21464	     92	   2572	  24128	   5e40	Task5_HAL.elf
+Finished building: default.size.stdout
+ 

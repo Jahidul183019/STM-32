@@ -1,0 +1,15 @@
+LaunchTargetManager/org.eclipse.launchbar.core.launchTargetType.local,Local/arch=aarch64
+LaunchTargetManager/org.eclipse.launchbar.core.launchTargetType.local,Local/name=Local
+LaunchTargetManager/org.eclipse.launchbar.core.launchTargetType.local,Local/os=macosx
+configDescList=org.eclipse.cdt.dsf.gdb.gdbRemotedescriptorType\:Task_2_Delay_Generation_HAL Debug,org.eclipse.cdt.dsf.gdb.gdbRemotedescriptorType\:Task_6_Extension_Buzzer Debug,org.eclipse.cdt.dsf.gdb.gdbRemotedescriptorType\:Task_6_Extension_Buzzer_Servo_or_Input Capture Debug,org.eclipse.cdt.dsf.gdb.gdbRemotedescriptorType\:Task_2_Delay_Generation_BareMetal Debug,org.eclipse.cdt.dsf.gdb.gdbRemotedescriptorType\:Task_2_HAL Debug,org.eclipse.cdt.dsf.gdb.gdbRemotedescriptorType\:Task_3_Duration_ Measurement_and_Code_Profiling_BareMetal,org.eclipse.cdt.dsf.gdb.gdbRemotedescriptorType\:Task_3_HAL Debug,org.eclipse.cdt.dsf.gdb.gdbRemotedescriptorType\:Task_4_PWM_Generation_and_LED_Brightness_Control_BareMetal Debug,org.eclipse.cdt.dsf.gdb.gdbRemotedescriptorType\:Task4_PWM_HAL Debug,org.eclipse.cdt.dsf.gdb.gdbRemotedescriptorType\:Task_6_Extension_Buzzer_BareMetal Debug,org.eclipse.cdt.dsf.gdb.gdbRemotedescriptorType\:Task_6_Extension_Buzzer_HAL Debug,org.eclipse.cdt.dsf.gdb.gdbRemotedescriptorType\:Task_5_BareMetal Debug,org.eclipse.cdt.dsf.gdb.gdbRemotedescriptorType\:Task5_HAL Debug
+eclipse.preferences.version=1
+org.eclipse.cdt.dsf.gdb.gdbRemotedescriptorType\:Task4_PWM_HAL\ Debug/activeLaunchMode=run
+org.eclipse.cdt.dsf.gdb.gdbRemotedescriptorType\:Task4_PWM_HAL\ Debug/activeLaunchTarget=null\:---
+org.eclipse.cdt.dsf.gdb.gdbRemotedescriptorType\:Task_2_Delay_Generation_BareMetal\ Debug/activeLaunchMode=run
+org.eclipse.cdt.dsf.gdb.gdbRemotedescriptorType\:Task_2_Delay_Generation_BareMetal\ Debug/activeLaunchTarget=null\:---
+org.eclipse.cdt.dsf.gdb.gdbRemotedescriptorType\:Task_2_Delay_Generation_HAL\ Debug/activeLaunchMode=run
+org.eclipse.cdt.dsf.gdb.gdbRemotedescriptorType\:Task_3_HAL\ Debug/activeLaunchMode=run
+org.eclipse.cdt.dsf.gdb.gdbRemotedescriptorType\:Task_4_PWM_Generation_and_LED_Brightness_Control_BareMetal\ Debug/activeLaunchMode=run
+org.eclipse.cdt.dsf.gdb.gdbRemotedescriptorType\:Task_5_WS2812B_RGB_LED_Colour_Mixing_and_Animation\ Debug/activeLaunchMode=run
+org.eclipse.cdt.dsf.gdb.gdbRemotedescriptorType\:Task_6_Extension_Buzzer\ Debug/activeLaunchMode=run
+org.eclipse.cdt.dsf.gdb.gdbRemotedescriptorType\:Task_6_Extension_Servo\ Debug/activeLaunchMode=debug

@@ -1,0 +1,28 @@
+20:52:48 **** Incremental Build of configuration Debug for project Project 1.1 ****
+make -j9 all 
+arm-none-eabi-size  Project\ 1.1.elf 
+   text	   data	    bss	    dec	    hex	filename
+    880	      0	   1568	   2448	    990	Project 1.1.elf
+Finished building: default.size.stdout
+ 
+20:52:55 **** Incremental Build of configuration Debug for project Project 1.1 ****
+make -j9 all 
+arm-none-eabi-size  Project\ 1.1.elf 
+   text	   data	    bss	    dec	    hex	filename
+    880	      0	   1568	   2448	    990	Project 1.1.elf
+Finished building: default.size.stdout
+ 
+20:53:05 **** Incremental Build of configuration Debug for project Project 1.1 ****
+make -j9 all 
+arm-none-eabi-size  Project\ 1.1.elf 
+   text	   data	    bss	    dec	    hex	filename
+    880	      0	   1568	   2448	    990	Project 1.1.elf
+Finished building: default.size.stdout
+ 
+20:53:10 **** Incremental Build of configuration Debug for project Project 1.1 ****
+make -j9 all 
+arm-none-eabi-size  Project\ 1.1.elf 
+   text	   data	    bss	    dec	    hex	filename
+    880	      0	   1568	   2448	    990	Project 1.1.elf
+Finished building: default.size.stdout
+ 

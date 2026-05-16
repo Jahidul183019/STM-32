@@ -1,0 +1,16 @@
+connections/org.eclipse.remote.serial.core.connectionType/Belkin+Right+Side/serial.baudRate=11
+connections/org.eclipse.remote.serial.core.connectionType/Belkin+Right+Side/serial.byteSize=3
+connections/org.eclipse.remote.serial.core.connectionType/Belkin+Right+Side/serial.parity=0
+connections/org.eclipse.remote.serial.core.connectionType/Belkin+Right+Side/serial.portName=/dev/cu.usbmodem21303
+connections/org.eclipse.remote.serial.core.connectionType/Belkin+Right+Side/serial.stopBits=0
+connections/org.eclipse.remote.serial.core.connectionType/Belkin/serial.baudRate=11
+connections/org.eclipse.remote.serial.core.connectionType/Belkin/serial.byteSize=3
+connections/org.eclipse.remote.serial.core.connectionType/Belkin/serial.parity=0
+connections/org.eclipse.remote.serial.core.connectionType/Belkin/serial.portName=/dev/cu.usbmodem1403
+connections/org.eclipse.remote.serial.core.connectionType/Belkin/serial.stopBits=0
+connections/org.eclipse.remote.serial.core.connectionType/STM/serial.baudRate=11
+connections/org.eclipse.remote.serial.core.connectionType/STM/serial.byteSize=3
+connections/org.eclipse.remote.serial.core.connectionType/STM/serial.parity=0
+connections/org.eclipse.remote.serial.core.connectionType/STM/serial.portName=/dev/cu.usbmodem1103
+connections/org.eclipse.remote.serial.core.connectionType/STM/serial.stopBits=0
+eclipse.preferences.version=1

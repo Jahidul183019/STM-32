@@ -1,0 +1,10 @@
+19:36:43 **** Incremental Build of configuration Debug for project Task_6_Extension_Buzzer_HAL ****
+make -j9 all 
+arm-none-eabi-size  Task_6_Extension_Buzzer_HAL.elf 
+   text	   data	    bss	    dec	    hex	filename
+  16372	     92	   2124	  18588	   489c	Task_6_Extension_Buzzer_HAL.elf
+Finished building: default.size.stdout
+ 
+
+19:36:43 Build Finished. 0 errors, 0 warnings. (took 86ms)
+

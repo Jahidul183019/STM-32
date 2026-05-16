@@ -1,0 +1,161 @@
+
+====================================
+ WS2812 HAL TASK
+ TIM1 CH1 -> PA8
+====================================
+
+--- Pa¸
+====================================
+ WS2812 HAL TASK
+ TIM1 CH1 -> PA8
+====================================
+
+--- Palette Demo ---
+Colour: Red          R=255 G=  0 B=  0 GRB=[00 FF 00]
+Colour: Green        R=  0 G=255 B=  0 GRB=[FF 00 00]
+Colour: Blue         R=  0 G=  0 B=255 GRB=[00 00 FF]
+Colour: Yellow       R=255 G=255 B=  0 GRB=[FF FF 00]
+Colour: Cyan         R=  0 G=255 B=255 GRB=[FF 00 FF]
+Colour: Magenta      R=255 G=  0 B=255 GRB=[00 FF FF]
+Colour: White        R=255 G=255 B=255 GRB=[FF FF FF]
+Colour: Warm White   R=255 G=200 B= 80 GRB=[C8 FF 50]
+Colour: DU Blue      R= 31 G= 56 B=100 GRB=[38 1F 64]
+Colour: Off          R=  0 G=  0 B=  0 GRB=[00 00 00]
+
+--- Hue Sweep ---
+H=  0 R=255 G=  0 B=  0
+H=  3 R=255 G= 12 B=  0
+H=  6 R=255 G= 25 B=  0
+H=  9 R=255 G= 38 B=  0
+H= 12 R=255 G= 51 B=  0
+H= 15 R=255 G= 63 B=  0
+H= 18 R=255 G= 76 B=  0
+H= 21 R=255 G= 89 B=  0
+H= 24 R=255 G=102 B=  0
+H= 27 R=255 G=114 B=  0
+H= 30 R=255 G=127 B=  0
+H= 33 R=255 G=140 B=  0
+H= 36 R=255 G=153 B=  0
+H= 39 R=255 G=165 B=  0
+H= 42 R=255 G=178 B=  0
+H= 45 R=255 G=191 B=  0
+H= 48 R=255 G=204 B=  0
+H= 51 R=255 G=216 B=  0
+H= 54 R=255 G=229 B=  0
+H= 57 R=255 G=242 B=  0
+H= 60 R=255 G=255 B=  0
+H= 63 R=242 G=255 B=  0
+H= 66 R=229 G=255 B=  0
+H= 69 R=216 G=255 B=  0
+H= 72 R=204 G=255 B=  0
+H= 75 R=191 G=255 B=  0
+H= 78 R=178 G=255 B=  0
+H= 81 R=165 G=255 B=  0
+H= 84 R=153 G=255 B=  0
+H= 87 R=140 G=255 B=  0
+H= 90 R=127 G=255 B=  0
+H= 93 R=114 G=255 B=  0
+H= 96 R=102 G=255 B=  0
+H= 99 R= 89 G=255 B=  0
+H=102 R= 76 G=255 B=  0
+H=105 R= 63 G=255 B=  0
+H=108 R= 51 G=255 B=  0
+H=111 R= 38 G=255 B=  0
+H=114 R= 25 G=255 B=  0
+H=117 R= 12 G=255 B=  0
+H=120 R=  0 G=255 B=  0
+H=123 R=  0 G=255 B= 12
+H=126 R=  0 G=255 B= 25
+H=129 R=  0 G=255 B= 38
+H=132 R=  0 G=255 B= 51
+H=135 R=  0 G=255 B= 63
+H=138 R=  0 G=255 B= 76
+H=141 R=  0 G=255 B= 89
+H=144 R=  0 G=255 B=102
+H=147 R=  0 G=255 B=114
+H=150 R=  0 G=255 B=127
+H=153 R=  0 G=255 B=140
+H=156 R=  0 G=255 B=153
+H=159 R=  0 G=255 B=165
+H=162 R=  0 G=255 B=178
+H=165 R=  0 G=255 B=191
+H=168 R=  0 G=255 B=204
+H=171 R=  0 G=255 B=216
+H=174 R=  0 G=255 B=229
+H=177 R=  0 G=255 B=242
+H=180 R=  0 G=255 B=255
+H=183 R=  0 G=242 B=255
+H=186 R=  0 G=229 B=255
+H=189 R=  0 G=216 B=255
+H=192 R=  0 G=204 B=255
+H=195 R=  0 G=191 B=255
+H=198 R=  0 G=178 B=255
+H=201 R=  0 G=165 B=255
+H=204 R=  0 G=153 B=255
+H=207 R=  0 G=140 B=255
+H=210 R=  0 G=127 B=255
+H=213 R=  0 G=114 B=255
+H=216 R=  0 G=102 B=255
+H=219 R=  0 G= 89 B=255
+H=222 R=  0 G= 76 B=255
+H=225 R=  0 G= 63 B=255
+H=228 R=  0 G= 51 B=255
+H=231 R=  0 G= 38 B=255
+H=234 R=  0 G= 25 B=255
+H=237 R=  0 G= 12 B=255
+H=240 R=  0 G=  0 B=255
+H=243 R= 12 G=  0 B=255
+H=246 R= 25 G=  0 B=255
+H=249 R= 38 G=  0 B=255
+H=252 R= 51 G=  0 B=255
+H=255 R= 63 G=  0 B=255
+H=258 R= 76 G=  0 B=255
+H=261 R= 89 G=  0 B=255
+H=264 R=102 G=  0 B=255
+H=267 R=114 G=  0 B=255
+H=270 R=127 G=  0 B=255
+H=273 R=140 G=  0 B=255
+H=276 R=153 G=  0 B=255
+H=279 R=165 G=  0 B=255
+H=282 R=178 G=  0 B=255
+H=285 R=191 G=  0 B=255
+H=288 R=204 G=  0 B=255
+H=291 R=216 G=  0 B=255
+H=294 R=229 G=  0 B=255
+H=297 R=242 G=  0 B=255
+H=300 R=255 G=  0 B=255
+H=303 R=255 G=  0 B=242
+H=306 R=255 G=  0 B=229
+H=309 R=255 G=  0 B=216
+H=312 R=255 G=  0 B=204
+H=315 R=255 G=  0 B=191
+H=318 R=255 G=  0 B=178
+H=321 R=255 G=  0 B=165
+H=324 R=255 G=  0 B=153
+H=327 R=255 G=  0 B=140
+H=330 R=255 G=  0 B=127
+H=333 R=255 G=  0 B=114
+H=336 R=255 G=  0 B=102
+H=339 R=255 G=  0 B= 89
+H=342 R=255 G=  0 B= 76
+H=345 R=255 G=  0 B= 63
+H=348 R=255 G=  0 B= 51
+H=351 R=255 G=  0 B= 38
+H=354 R=255 G=  0 B= 25
+H=357 R=255 G=  0 B= 12
+
+--- 4 LED Chase ---
+Round 1 Active LED: 0
+Round 1 Active LED: 1
+Round 1 Active LED: 2
+Round 1 Active LED: 3
+Round 2 Active LED: 0
+Round 2 Active LED: 1
+Round 2 Active LED: 2
+Round 2 Active LED: 3
+Round 3 Active LED: 0
+Round 3 Active LED: 1
+Round 3 Active LED: 2
+Round 3 Active LED: 3
+
+Task Completed. LEDs OFF.

@@ -1,0 +1,10 @@
+18:46:43 **** Incremental Build of configuration Debug for project Task_2_Delay_Generation_BareMetal ****
+make -j9 all 
+arm-none-eabi-size  Task_2_Delay_Generation_BareMetal.elf 
+   text	   data	    bss	    dec	    hex	filename
+   4940	     80	   1896	   6916	   1b04	Task_2_Delay_Generation_BareMetal.elf
+Finished building: default.size.stdout
+ 
+
+18:46:43 Build Finished. 0 errors, 0 warnings. (took 85ms)
+

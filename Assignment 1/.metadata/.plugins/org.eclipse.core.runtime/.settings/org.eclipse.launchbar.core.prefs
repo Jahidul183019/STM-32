@@ -1,0 +1,16 @@
+LaunchTargetManager/org.eclipse.launchbar.core.launchTargetType.local,Local/arch=aarch64
+LaunchTargetManager/org.eclipse.launchbar.core.launchTargetType.local,Local/name=Local
+LaunchTargetManager/org.eclipse.launchbar.core.launchTargetType.local,Local/os=macosx
+configDescList=org.eclipse.cdt.dsf.gdb.gdbRemotedescriptorType\:Project 2.2 Debug,org.eclipse.cdt.dsf.gdb.gdbRemotedescriptorType\:Project 3.2 Debug,org.eclipse.cdt.dsf.gdb.gdbRemotedescriptorType\:Project 5.2 Debug,org.eclipse.cdt.dsf.gdb.gdbRemotedescriptorType\:Project 4.2 Debug,org.eclipse.cdt.dsf.gdb.gdbRemotedescriptorType\:Project 1.2 Debug,org.eclipse.cdt.dsf.gdb.gdbRemotedescriptorType\:Project 4.1 Debug,org.eclipse.cdt.dsf.gdb.gdbRemotedescriptorType\:Project 2.1 Debug,org.eclipse.cdt.dsf.gdb.gdbRemotedescriptorType\:Project 3.1,org.eclipse.cdt.dsf.gdb.gdbRemotedescriptorType\:Project 5.1,org.eclipse.cdt.dsf.gdb.gdbRemotedescriptorType\:Project 1.1 Debug
+eclipse.preferences.version=1
+org.eclipse.cdt.dsf.gdb.gdbRemotedescriptorType\:Assignment/activeLaunchMode=run
+org.eclipse.cdt.dsf.gdb.gdbRemotedescriptorType\:Assignment/activeLaunchTarget=null\:---
+org.eclipse.cdt.dsf.gdb.gdbRemotedescriptorType\:Project\ 1.1\ Debug/activeLaunchMode=debug
+org.eclipse.cdt.dsf.gdb.gdbRemotedescriptorType\:Project\ 1.1\ Debug/activeLaunchTarget=null\:---
+org.eclipse.cdt.dsf.gdb.gdbRemotedescriptorType\:Project\ 2.1\ Debug/activeLaunchMode=run
+org.eclipse.cdt.dsf.gdb.gdbRemotedescriptorType\:Project\ 3.1/activeLaunchMode=run
+org.eclipse.cdt.dsf.gdb.gdbRemotedescriptorType\:Project\ 4.1\ Debug/activeLaunchMode=run
+org.eclipse.cdt.dsf.gdb.gdbRemotedescriptorType\:Project\ 5.1/activeLaunchMode=run
+org.eclipse.cdt.dsf.gdb.gdbRemotedescriptorType\:Project\ 5.2\ Debug/activeLaunchMode=run
+org.eclipse.cdt.dsf.gdb.gdbRemotedescriptorType\:Project\ Debug/activeLaunchMode=run
+org.eclipse.cdt.dsf.gdb.gdbRemotedescriptorType\:Project\ Debug/activeLaunchTarget=null\:---
