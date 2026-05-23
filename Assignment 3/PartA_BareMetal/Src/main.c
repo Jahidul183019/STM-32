@@ -1,52 +1,79 @@
 /*
  * ============================================================
- * University of Dhaka — Department of CSE
  * CSE 2206 — Microcontroller & Embedded System Lab
- * Assignment 3: BME280 via SPI — Bare-Metal Implementation
+ * Assignment 3, Part A: BMP280 Sensor Interface — BARE-METAL
  * Platform : STM32F446RE Nucleo-64
  * Clock    : SYSCLK = 180 MHz, APB1 = 45 MHz, APB2 = 90 MHz
+ * Target   : BMP280 (Modified from BME280 template)
+ * SPI Mode : Mode 00 (CPOL=0, CPHA=0) as per Lab Mandate
  * ============================================================
  */
 
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-#include <stm32f446xx.h>
+#include <stm32f446xx.h>   /* CMSIS device header */
 
-/* BME280 Register Address Map (Step A3.6) */
-#define BME280_REG_DIG_T1       0x88
-#define BME280_REG_CHIP_ID      0xD0
-#define BME280_REG_RESET        0xE0
-#define BME280_REG_CTRL_HUM     0xF2
-#define BME280_REG_STATUS       0xF3
-#define BME280_REG_CTRL_MEAS    0xF4
-#define BME280_REG_CONFIG       0xF5
-#define BME280_REG_BURST_START  0xF7
+/* BMP280 Register Address Map */
+#define BMP280_REG_DIG_T1       0x88
+#define BMP280_REG_DIG_T2       0x8A
+#define BMP280_REG_DIG_T3       0x8C
+#define BMP280_REG_DIG_P1       0x8E
+#define BMP280_REG_DIG_P2       0x90
+#define BMP280_REG_DIG_P3       0x92
+#define BMP280_REG_DIG_P4       0x94
+#define BMP280_REG_DIG_P5       0x96
+#define BMP280_REG_DIG_P6       0x98
+#define BMP280_REG_DIG_P7       0x9A
+#define BMP280_REG_DIG_P8       0x9C
+#define BMP280_REG_DIG_P9       0x9E
+#define BMP280_REG_CHIP_ID      0xD0
+#define BMP280_REG_RESET        0xE0
+#define BMP280_REG_STATUS       0xF3
+#define BMP280_REG_CTRL_MEAS    0xF4
+#define BMP280_REG_CONFIG       0xF5
+#define BMP280_REG_BURST_START  0xF7  /* Pressure MSB start point */
 
-/* Calibration Parameters Structure */
+/* Calibration parameters structure (BMP280 has no Humidity parameters) */
 typedef struct {
-    uint16_t dig_T1; int16_t dig_T2; int16_t dig_T3;
-    uint16_t dig_P1; int16_t dig_P2; int16_t dig_P3; int16_t dig_P4;
-    int16_t  dig_P5; int16_t dig_P6; int16_t dig_P7; int16_t dig_P8; int16_t dig_P9;
-    uint08_t dig_H1; int16_t dig_H2; uint08_t dig_H3; int16_t dig_H4; int16_t dig_H5; int08_t dig_H6;
-} BME280_Calib_t;
+    uint16_t dig_T1;
+    int16_t  dig_T2;
+    int16_t  dig_T3;
+    uint16_t dig_P1;
+    int16_t  dig_P2;
+    int16_t  dig_P3;
+    int16_t  dig_P4;
+    int16_t  dig_P5;
+    int16_t  dig_P6;
+    int16_t  dig_P7;
+    int16_t  dig_P8;
+    int16_t  dig_P9;
+} BMP280_Calib_t;
 
-static BME280_Calib_t calib;
-static int32_t t_fine;
+static BMP280_Calib_t calib;
+static int32_t t_fine; /* Global variable used for pressure math translation */
 
-/* Volatile Globals for Inter-process tracking */
-static uint8_t sensor_data[8];
-float temp_C, temp_F, pres_hPa, hum_RH;
+/* Microsecond and millisecond loops calibrated for 180 MHz core clock */
+void delay_us(uint32_t us)
+{
+    uint32_t count = us * 30;
+    while (count--) {
+        __NOP();
+    }
+}
 
-void delay_ms(uint32_t ms) {
-    uint32_t count = ms * 30000;
-    while (count--) { __NOP(); }
+void delay_ms(uint32_t ms)
+{
+    while (ms--) {
+        delay_us(1000);
+    }
 }
 
 /* =========================================================
- * A3.1 — Clock Configuration (180 MHz HSE-PLL)
+ * SECTION 0 — System Clock Configuration (180 MHz HSE-PLL)
  * ========================================================= */
-void SystemClock_Config(void) {
+void SystemClock_Config(void)
+{
     RCC->APB1ENR |= RCC_APB1ENR_PWREN;
     PWR->CR |= PWR_CR_VOS;
 
@@ -61,7 +88,7 @@ void SystemClock_Config(void) {
     RCC->PLLCFGR |= (8   << RCC_PLLCFGR_PLLM_Pos);
     RCC->PLLCFGR |= (180 << RCC_PLLCFGR_PLLN_Pos);
     RCC->PLLCFGR |= (0   << RCC_PLLCFGR_PLLP_Pos);
-    RCC->PLLCFGR |= RCC_PLLCFGR_PLLSRC_HSI;
+    RCC->PLLCFGR |= (RCC_PLLCFGR_PLLSRC_HSI);
     RCC->PLLCFGR |= (2   << RCC_PLLCFGR_PLLQ_Pos);
 
     RCC->CR |= RCC_CR_PLLON;
@@ -69,113 +96,159 @@ void SystemClock_Config(void) {
 
     PWR->CR |= PWR_CR_ODEN;
     while (!(PWR->CSR & PWR_CSR_ODRDY));
+
     PWR->CR |= PWR_CR_ODSWEN;
     while (!(PWR->CSR & PWR_CSR_ODSWRDY));
 
-    RCC->CFGR |= RCC_CFGR_HPRE_DIV1;  /* AHB = 180MHz */
-    RCC->CFGR |= RCC_CFGR_PPRE1_DIV4; /* APB1 = 45MHz */
-    RCC->CFGR |= RCC_CFGR_PPRE2_DIV2; /* APB2 = 90MHz */
+    RCC->CFGR |= RCC_CFGR_HPRE_DIV1;
+    RCC->CFGR |= RCC_CFGR_PPRE1_DIV4; /* APB1 = 45 MHz */
+    RCC->CFGR |= RCC_CFGR_PPRE2_DIV2; /* APB2 = 90 MHz */
 
     RCC->CFGR &= ~RCC_CFGR_SW;
     RCC->CFGR |=  RCC_CFGR_SW_PLL;
+
     while ((RCC->CFGR & RCC_CFGR_SWS) != RCC_CFGR_SWS_PLL);
 }
 
 /* =========================================================
- * A3.2 & A3.3 — GPIO & USART2 Configuration
+ * SECTION 1 — USART2 Configuration (115200 Baud)
  * ========================================================= */
-void USART2_Init(void) {
+static void USART2_Init(void)
+{
     RCC->AHB1ENR |= RCC_AHB1ENR_GPIOAEN;
     RCC->APB1ENR |= RCC_APB1ENR_USART2EN;
 
+    /* PA2: TX, PA3: RX assigned to Alternative Function 7 */
     GPIOA->MODER  &= ~((3U << (2*2)) | (3U << (3*2)));
     GPIOA->MODER  |=  ((2U << (2*2)) | (2U << (3*2)));
+
     GPIOA->AFR[0] &= ~((0xFU << (4*2)) | (0xFU << (4*3)));
     GPIOA->AFR[0] |=  ((7U   << (4*2)) | (7U   << (4*3)));
-    GPIOA->OSPEEDR|=  ((3U << (2*2)) | (3U << (3*2)));
 
-    USART2->BRR = (24U << 4) | 7U;
+    USART2->BRR = (24U << 4) | 7U; /* 45 MHz APB1 clock target */
     USART2->CR1 = USART_CR1_TE | USART_CR1_RE | USART_CR1_UE;
 }
 
-void UART_SendString(const char *s) {
-    while (*s) {
-        while (!(USART2->SR & (1 << 7))); /* Wait TXE */
+static void USART2_SendString(const char *s)
+{
+    while (*s)
+    {
+        while (!(USART2->SR & USART_SR_TXE)) {}
         USART2->DR = (uint8_t)(*s++);
     }
+    while (!(USART2->SR & USART_SR_TC)) {}
 }
 
-int __io_putchar(int ch) {
-    while (!(USART2->SR & (1 << 7)));
+int __io_putchar(int ch)
+{
+    while (!(USART2->SR & USART_SR_TXE));
     USART2->DR = (ch & 0xFF);
     return ch;
 }
 
 /* =========================================================
- * A3.5 — SPI2 Configuration (Lab Specification Prescaler)
+ * SECTION 3 — SPI2 Configuration (Lab Specification Mandate)
  * ========================================================= */
-void SPI2_Init(void) {
+static void SPI2_Init(void)
+{
+    /* Enable clocks for Port B, Port C and SPI2 Peripheral */
     RCC->AHB1ENR |= RCC_AHB1ENR_GPIOBEN | RCC_AHB1ENR_GPIOCEN;
     RCC->APB1ENR |= RCC_APB1ENR_SPI2EN;
 
-    /* PC1: MOSI (AF7), PC2: MISO (AF5), PC7: SCK (AF5) */
-    GPIOC->MODER  &= ~((3U << (1*2)) | (3U << (2*2)) | (3U << (7*2)));
-    GPIOC->MODER  |=  ((2U << (1*2)) | (2U << (2*2)) | (2U << (7*2)));
-    GPIOC->AFR[0] &= ~((0xFU << (4*1)) | (0xFU << (4*2)) | (0xFU << (4*7)));
-    GPIOC->AFR[0] |=  ((7U   << (4*1)) | (5U   << (4*2)) | (5U   << (4*7)));
+    /* PC1: SPI2_MOSI (AF7) */
+    GPIOC->MODER  &= ~(3U << (1*2));
+    GPIOC->MODER  |=  (2U << (1*2));
+    GPIOC->AFR[0] &= ~(0xFU << (4*1));
+    GPIOC->AFR[0] |=  (7U   << (4*1));
+
+    /* PC2: SPI2_MISO (AF5) */
+    GPIOC->MODER  &= ~(3U << (2*2));
+    GPIOC->MODER  |=  (2U << (2*2));
+    GPIOC->AFR[0] &= ~(0xFU << (4*2));
+    GPIOC->AFR[0] |=  (5U   << (4*2));
+
+    /* PC7: SPI2_SCK (AF5) */
+    GPIOC->MODER  &= ~(3U << (7*2));
+    GPIOC->MODER  |=  (2U << (7*2));
+    GPIOC->AFR[0] &= ~(0xFU << (4*7));
+    GPIOC->AFR[0] |=  (5U   << (4*7));
+
+    /* Apply High Speed '11' to OSPEEDR for sharp transition square waves on 180MHz clock */
     GPIOC->OSPEEDR |= ((3U << (1*2)) | (3U << (2*2)) | (3U << (7*2)));
 
-    /* PB9: CS Output */
+    /* PB9: GPIO Output for CS Line (Active Low) */
     GPIOB->MODER  &= ~(3U << (9*2));
-    GPIOB->MODER  |=  (1U << (9*2));
-    GPIOB->OSPEEDR|=  (3U << (9*2));
-    GPIOB->ODR    |=  (1 << 9); /* High */
+    GPIOB->MODER  |=  (1U << (9*2));   /* Output Mode */
+    GPIOB->OSPEEDR|=  (3U << (9*2));   /* High speed drive */
+    GPIOB->BSRR   =  (1U << 9);        /* CS High (Unselected) */
 
-    /* Match manual Step A3.5 bit expressions exactly */
-    SPI2->CR1 = (1 << 2)   /* MSTR = 1 */
-              | (2 << 3)   /* BR = 010 (fPCLK / 8) */
-              | (0 << 1)   /* CPOL = 0 */
-              | (0 << 0)   /* CPHA = 0 (Mode 00) */
-              | (0 << 7)   /* LSBFIRST = 0 */
-              | (1 << 9)   /* SSM = 1 */
-              | (1 << 8)   /* SSI = 1 */
-              | (0 << 11); /* DFF = 0 (8-bit) */
+    /* SPI2 Setup Configuration */
+    SPI2->CR1 = 0;
+    SPI2->CR1 |= SPI_CR1_MSTR;                 /* Set Master Mode */
 
-    SPI2->CR1 |= (1 << 6); /* SPE = 1 */
+    /* Baud rate divider: fPCLK / 32
+     * APB1 clock = 45 MHz. Divider /32 = 1.4 MHz (Ensures safe transmission on breadboards) */
+    SPI2->CR1 |= (4 << SPI_CR1_BR_Pos);
+
+    /* MANDATED LAB CORRECTION: SPI Mode 00 (CPOL=0, CPHA=0)
+     * Clear both bits explicitly to ensure conformity with manual assignment guidelines */
+    SPI2->CR1 &= ~(SPI_CR1_CPOL | SPI_CR1_CPHA);
+
+    SPI2->CR1 |= SPI_CR1_SSM | SPI_CR1_SSI;    /* Enable Software Slave Management */
+    SPI2->CR1 |= SPI_CR1_SPE;                  /* Enable Peripheral hardware */
 }
 
-/* =========================================================
- * A4 — Low-Level Functions
- * ========================================================= */
-uint8_t SPI_TxRx(uint8_t data) {
-    while (!(SPI2->SR & (1 << 1))); /* Wait TXE */
-    SPI2->DR = data;
-    while (!(SPI2->SR & (1 << 0))); /* Wait RXNE */
-    return (uint8_t)SPI2->DR;
+/* Low-level single byte SPI exchange over SPI2 */
+static uint8_t SPI2_Transceive(uint8_t data)
+{
+    while (!(SPI2->SR & SPI_SR_TXE));          /* Check that transmit buffer is empty */
+    SPI2->DR = data;                           /* Load payload byte */
+    while (!(SPI2->SR & SPI_SR_RXNE));         /* Await incoming data buffer */
+    return SPI2->DR;                           /* Pop out and return read byte */
 }
 
-void BME280_SPI_WriteReg(uint8_t reg, uint8_t data) {
-    GPIOB->ODR &= ~(1 << 9); /* CS LOW */
-    SPI_TxRx(reg & 0x7F);    /* MSB = 0 */
-    SPI_TxRx(data);
-    GPIOB->ODR |= (1 << 9);  /* CS HIGH */
+/* BMP280 SPI Register Write: Mask Address bit 7 to Low */
+static void BMP280_SPI_WriteReg(uint8_t reg, uint8_t value)
+{
+    GPIOB->BSRR = (1U << (9 + 16));            /* Drive CS Low */
+    SPI2_Transceive(reg & 0x7F);               /* Address write modification control bit */
+    SPI2_Transceive(value);                    /* Dispatch state code */
+    while (SPI2->SR & SPI_SR_BSY);             /* Block execution until flag drops */
+    GPIOB->BSRR = (1U << 9);                   /* Reset CS to High */
 }
 
-void BME280_SPI_ReadRegs(uint8_t reg, uint8_t *buf, uint8_t len) {
-    GPIOB->ODR &= ~(1 << 9); /* CS LOW */
-    SPI_TxRx(reg | 0x80);    /* MSB = 1 */
-    for (uint8_t i = 0; i < len; i++) {
-        buf[i] = SPI_TxRx(0xFF);
+/* BMP280 SPI Register Read: Assert Address bit 7 to High */
+static uint8_t BMP280_SPI_ReadReg(uint8_t reg)
+{
+    uint8_t val;
+    GPIOB->BSRR = (1U << (9 + 16));            /* Drive CS Low */
+    SPI2_Transceive(reg | 0x80);               /* Read command identifier modification */
+    val = SPI2_Transceive(0x00);               /* Run dummy clock cycle to clear buffer */
+    while (SPI2->SR & SPI_SR_BSY);
+    GPIOB->BSRR = (1U << 9);                   /* Reset CS to High */
+    return val;
+}
+
+/* Sequential multi-byte packet recovery across memory register offsets */
+static void BMP280_SPI_BurstRead(uint8_t start_reg, uint8_t *buffer, uint16_t length)
+{
+    GPIOB->BSRR = (1U << (9 + 16));            /* Drive CS Low */
+    SPI2_Transceive(start_reg | 0x80);
+    for (uint16_t i = 0; i < length; i++) {
+        buffer[i] = SPI2_Transceive(0x00);     /* Read register while address auto-increments */
     }
-    GPIOB->ODR |= (1 << 9);  /* CS HIGH */
+    while (SPI2->SR & SPI_SR_BSY);
+    GPIOB->BSRR = (1U << 9);                   /* Reset CS to High */
 }
 
 /* =========================================================
- * A3.6 — Calibration Constants Mapping Parsing
+ * SECTION 4 — BMP280 Calibration Mapping & Compensation Data
  * ========================================================= */
-void BME280_ReadCalibration(void) {
+static void BMP280_ReadCalibration(void)
+{
     uint8_t buf[24];
-    BME280_SPI_ReadRegs(BME280_REG_DIG_T1, buf, 24);
+    BMP280_SPI_BurstRead(BMP280_REG_DIG_T1, buf, 24);
+
     calib.dig_T1 = (uint16_t)((buf[1] << 8) | buf[0]);
     calib.dig_T2 = (int16_t)((buf[3] << 8)  | buf[2]);
     calib.dig_T3 = (int16_t)((buf[5] << 8)  | buf[4]);
@@ -188,19 +261,13 @@ void BME280_ReadCalibration(void) {
     calib.dig_P7 = (int16_t)((buf[19] << 8) | buf[18]);
     calib.dig_P8 = (int16_t)((buf[21] << 8) | buf[20]);
     calib.dig_P9 = (int16_t)((buf[23] << 8) | buf[22]);
-
-    calib.dig_H1 = BME280_SPI_ReadRegs(0xA1, buf, 1), buf[0];
-    BME280_SPI_ReadRegs(0xE1, buf, 7);
-    calib.dig_H2 = (int16_t)((buf[1] << 8) | buf[0]);
-    calib.dig_H3 = buf[2];
-    calib.dig_H4 = (int16_t)((buf[3] << 4) | (buf[4] & 0x0F));
-    calib.dig_H5 = (int16_t)((buf[5] << 4) | (buf[4] >> 4));
-    calib.dig_H6 = (int08_t)buf[6];
 }
 
-/* Data Compensation Algorithms (Step A3.7) */
-int32_t BME280_Compensate_T(int32_t adc_T) {
+static int32_t BMP280_Compensate_T(int32_t adc_T)
+{
     int32_t var1, var2, T;
+    if (calib.dig_T1 == 0) return 0; /* Guard against zero configurations */
+
     var1 = ((((adc_T >> 3) - ((int32_t)calib.dig_T1 << 1))) * ((int32_t)calib.dig_T2)) >> 11;
     var2 = (((((adc_T >> 4) - ((int32_t)calib.dig_T1)) * ((adc_T >> 4) - ((int32_t)calib.dig_T1))) >> 12) * ((int32_t)calib.dig_T3)) >> 14;
     t_fine = var1 + var2;
@@ -208,15 +275,21 @@ int32_t BME280_Compensate_T(int32_t adc_T) {
     return T;
 }
 
-uint32_t BME280_Compensate_P(int32_t adc_P) {
+static uint32_t BMP280_Compensate_P(int32_t adc_P)
+{
     int64_t var1, var2, p;
+    if (calib.dig_P1 == 0) return 0; /* Guard against uninitialized math matrices */
+
     var1 = ((int64_t)t_fine) - 128000;
     var2 = var1 * var1 * (int64_t)calib.dig_P6;
     var2 = var2 + ((var1 * (int64_t)calib.dig_P5) << 17);
     var2 = var2 + (((int64_t)calib.dig_P4) << 31);
     var1 = ((var1 * var1 * (int64_t)calib.dig_P3) >> 8) + ((var1 * (int64_t)calib.dig_P2) << 12);
     var1 = (((((int64_t)1) << 47) + var1)) * ((int64_t)calib.dig_P1) >> 33;
-    if (var1 == 0) return 0;
+
+    if (var1 == 0) {
+        return 0; /* Clear divide by zero fault risks */
+    }
     p = 1048576 - adc_P;
     p = (((p << 31) - var2) * 3125) / var1;
     var1 = (((int64_t)calib.dig_P9) * (p >> 13) * (p >> 13)) >> 25;
@@ -225,91 +298,87 @@ uint32_t BME280_Compensate_P(int32_t adc_P) {
     return (uint32_t)p;
 }
 
-uint32_t BME280_Compensate_H(int32_t adc_H) {
-    int32_t v_x1_u32r;
-    v_x1_u32r = (t_fine - ((int32_t)76800));
-    v_x1_u32r = (((((adc_H << 14) - (((int32_t)calib.dig_H4) << 20) - (((int32_t)calib.dig_H5) * v_x1_u32r)) +
-                   ((int32_t)16384)) >> 15) * (((((((v_x1_u32r * ((int32_t)calib.dig_H6)) >> 10) * (((v_x1_u32r * ((int32_t)calib.dig_H3)) >> 11) + ((int32_t)32768))) >> 10) + ((int32_t)2097152)) *
-                   ((int32_t)calib.dig_H2) + 8192) >> 14));
-    v_x1_u32r = (v_x1_u32r - (((((v_x1_u32r >> 15) * (v_x1_u32r >> 15)) >> 7) * ((int32_t)calib.dig_H1)) >> 4));
-    v_x1_u32r = (v_x1_u32r < 0 ? 0 : v_x1_u32r);
-    v_x1_u32r = (v_x1_u32r > 419430400 ? 419430400 : v_x1_u32r);
-    return (uint32_t)(v_x1_u32r >> 12);
-}
-
 /* =========================================================
- * A3.4 — Hardware TIM6 (1-Second Telemetry Execution Interrupt)
+ * SECTION 5 — Main Program Flow
  * ========================================================= */
-void TIM6_Init(void) {
-    RCC->APB1ENR |= RCC_APB1ENR_TIM6EN;
-    TIM6->PSC = 9000 - 1;       /* 90 MHz APB1 target adjustments */
-    TIM6->ARR = 10000 - 1;      /* 1 Second trigger profile matching manual values */
-    TIM6->DIER |= TIM6_DIER_UIE;
-    TIM6->CR1 |= TIM6_CR1_CEN;
-
-    NVIC_EnableIRQ(TIM6_DAC_IRQn);
-}
-
-void TIM6_DAC_IRQHandler(void) {
-    if (TIM6->SR & TIM6_SR_UIF) {
-        TIM6->SR &= ~TIM6_SR_UIF; /* Clear flag */
-
-        /* Recover raw sensor arrays (Step A3.7) */
-        BME280_SPI_ReadRegs(BME280_REG_BURST_START, sensor_data, 8);
-
-        /* Apply exact casting shifts directly matching the manual formulas */
-        int32_t adc_P = (int32_t)((((uint32_t)sensor_data[0]) << 12) | (((uint32_t)sensor_data[1]) << 4) | (((uint32_t)sensor_data[2]) >> 4));
-        int32_t adc_T = (int32_t)((((uint32_t)sensor_data[3]) << 12) | (((uint32_t)sensor_data[4]) << 4) | (((uint32_t)sensor_data[5]) >> 4));
-        int32_t adc_H = (int32_t)((((uint32_t)sensor_data[6]) << 8)  | ((uint32_t)sensor_data[7]));
-
-        /* Execute Bosch compensation equations */
-        int32_t comp_T = BME280_Compensate_T(adc_T);
-        uint32_t comp_P = BME280_Compensate_P(adc_P);
-        uint32_t comp_H = BME280_Compensate_H(adc_H);
-
-        /* Precise casting down directly to matching parameters fractions */
-        temp_C = (float)comp_T / 100.0f;
-        temp_F = (temp_C * 9.0f / 5.0f) + 32.0f;
-        pres_hPa = (float)comp_P / 256.0f / 100.0f;
-        hum_RH = (float)comp_H / 1024.0f;
-
-        /* Print formatting payload string matching Step A4.4 perfectly */
-        char msg[128];
-        sprintf(msg, "[SPI] Temp: %.2fC / %.2fF | Pres: %.2fhPa | Hum: %.2f%%\r\n",
-                temp_C, temp_F, pres_hPa, hum_RH);
-
-        UART_SendString(msg);
-    }
-}
-
-/* =========================================================
- * Main Core Initialization Block
- * ========================================================= */
-int main(void) {
+int main(void)
+{
     SystemClock_Config();
     USART2_Init();
-    SPI2_Init();
+    SPI2_Init(); /* Remapped SPI bus interface initialization */
 
-    UART_SendString("Initializing BME280 Base Core...\r\n");
+    USART2_SendString("\r\n========================================\r\n");
+    USART2_SendString("STM32F446RE - Assignment 3 Part A\r\n");
+    USART2_SendString("BMP280 Sensor Interface - Bare Metal SPI2\r\n");
+    USART2_SendString("========================================\r\n");
 
-    /* Soft Reset Configuration sequence (Step A3.6) */
-    BME280_SPI_WriteReg(BME280_REG_RESET, 0xB6);
-    delay_ms(10);
+    /* Read and validate the identity of a BMP280 sensor module */
+    uint8_t chip_id = BMP280_SPI_ReadReg(BMP280_REG_CHIP_ID);
+    printf("Reading BMP280 CHIP ID...\r\n");
+    printf("CHIP ID Recieved: 0x%02X (Expected: 0x58, 0x57, or 0x56)\r\n", chip_id);
 
-    /* Load Calibration matrices vectors */
-    BME280_ReadCalibration();
-
-    /* Write register sequence directly matching your assignment values */
-    BME280_SPI_WriteReg(BME280_REG_CTRL_HUM, 0x01);   /* ctrl_hum: x1 oversampling */
-    BME280_SPI_WriteReg(BME280_REG_CTRL_MEAS, 0x57);  /* ctrl_meas */
-    BME280_SPI_WriteReg(BME280_REG_CONFIG, 0x10);     /* config */
-
-    UART_SendString("BME280 Operational Mode Engaged. Arming TIM6...\r\n");
-
-    /* Turn on hardware interrupt trigger */
-    TIM6_Init();
-
-    while (1) {
-        __WFI(); /* Sleep mode idle state saving power */
+    if (chip_id != 0x58 && chip_id != 0x57 && chip_id != 0x56) {
+        printf("ERROR: Unexpected Chip ID! Halting program...\r\n");
+        while(1);
     }
+    printf("BMP280 Communication verified successfully!\r\n");
+
+    /* Issue Soft Reset */
+    BMP280_SPI_WriteReg(BMP280_REG_RESET, 0xB6);
+
+    /* CRITICAL FIX: Give the sensor 300ms to load its calibration variables
+     * from internal factory NVM back to digital mirrors before parsing */
+    delay_ms(300);
+
+    /* Parse NVM Trimming Constants */
+    BMP280_ReadCalibration();
+    printf("Calibration matrices parsed from sensor NVM.\r\n");
+
+    /* config (0xF5): Standby 0.5ms, IIR filter coefficient = 16
+     * Value = (0 << 5) | (4 << 2) = 0x10 */
+    BMP280_SPI_WriteReg(BMP280_REG_CONFIG, 0x10);
+
+    /* ctrl_meas (0xF4): Pressure x16, Temp x2, Normal mode operational loop state
+     * Value = (0x02 << 5) | (0x05 << 2) | 0x03 = 0x57 */
+    BMP280_SPI_WriteReg(BMP280_REG_CTRL_MEAS, 0x57);
+    printf("Sensor runtime metrics updated to Normal Operation.\r\n\r\n");
+
+    uint8_t sensor_data[6];
+    int32_t adc_P, adc_T;
+    int32_t comp_T;
+    uint32_t comp_P;
+
+    while (1)
+        {
+            /* Burst read 6 continuous environmental data bytes from register 0xF7 */
+            BMP280_SPI_BurstRead(BMP280_REG_BURST_START, sensor_data, 6);
+
+            /* Reconstruct Raw Registers */
+            adc_P = (int32_t)((((uint32_t)sensor_data[0]) << 12) | (((uint32_t)sensor_data[1]) << 4) | (((uint32_t)sensor_data[2]) >> 4));
+            adc_T = (int32_t)((((uint32_t)sensor_data[3]) << 12) | (((uint32_t)sensor_data[4]) << 4) | (((uint32_t)sensor_data[5]) >> 4));
+
+            /* Compute Compensated Metrics */
+            comp_T = BMP280_Compensate_T(adc_T);
+            comp_P = BMP280_Compensate_P(adc_P);
+
+            // --- MOCK-FLOAT PARSING LOGIC ---
+            // Temperature Math (e.g., 2532 becomes Whole: 25, Fraction: 32)
+            int32_t temp_whole = comp_T / 100;
+            int32_t temp_fraction = comp_T % 100;
+            if (temp_fraction < 0) temp_fraction = -temp_fraction; // Handle sub-zero temperatures safely
+
+            // Pressure Math: Convert fixed-point Q24.8 to standard hPa with 2 decimal places
+            // comp_P / 256 gives Pascal integers. Divide by 100 to get hPa.
+            uint32_t press_pascal = comp_P / 256;
+            uint32_t press_hpa_whole = press_pascal / 100;
+            uint32_t press_hpa_fraction = press_pascal % 100;
+
+            // This statement behaves EXACTLY like a float specifier, but will NEVER freeze or crash.
+            printf("Environment -> Temp: %ld.%02ld *C | Press: %lu.%02lu hPa\r\n",
+                   temp_whole, temp_fraction, press_hpa_whole, press_hpa_fraction);
+
+            delay_ms(1000);
+        }
+
+    return 0;
 }
