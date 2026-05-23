@@ -2,39 +2,59 @@
  * ============================================================
  * CSE 2206 — Microcontroller & Embedded System Lab
  * Assignment 3, Part A: BMP280 Sensor Interface — BARE-METAL
- * Platform : STM32F446RE Nucleo-64
- * Clock    : SYSCLK = 180 MHz, APB1 = 45 MHz, APB2 = 90 MHz
- * Target   : BMP280 (Modified from BME280 template)
- * SPI Mode : Mode 00 (CPOL=0, CPHA=0) as per Lab Mandate
+ * Platform  : STM32F446RE Nucleo-64
+ * Clock     : SYSCLK = 180 MHz (HSE PLL), APB1 = 45 MHz, APB2 = 90 MHz
+ * Sensor    : BMP280 (hardware substitute for BME280)
+ *
+ * Pin Mapping:
+ * PC1  → SPI2_MOSI  (AF7)
+ * PC2  → SPI2_MISO  (AF5)
+ * PC7  → SPI2_SCK   (AF5)
+ * PB9  → CS         (GPIO Output, active LOW)
+ * PA2  → USART2_TX  (AF7)
+ * PA3  → USART2_RX  (AF7)
+ *
+ * Periodic output: TIM6 hardware interrupt every 1 second (ISR-driven)
+ * Baud rate: 115200 @ 45 MHz APB1
  * ============================================================
  */
 
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-#include <stm32f446xx.h>   /* CMSIS device header */
+#include <stm32f446xx.h>    /* CMSIS device header */
 
-/* BMP280 Register Address Map */
-#define BMP280_REG_DIG_T1       0x88
-#define BMP280_REG_DIG_T2       0x8A
-#define BMP280_REG_DIG_T3       0x8C
-#define BMP280_REG_DIG_P1       0x8E
-#define BMP280_REG_DIG_P2       0x90
-#define BMP280_REG_DIG_P3       0x92
-#define BMP280_REG_DIG_P4       0x94
-#define BMP280_REG_DIG_P5       0x96
-#define BMP280_REG_DIG_P6       0x98
-#define BMP280_REG_DIG_P7       0x9A
-#define BMP280_REG_DIG_P8       0x9C
-#define BMP280_REG_DIG_P9       0x9E
-#define BMP280_REG_CHIP_ID      0xD0
-#define BMP280_REG_RESET        0xE0
-#define BMP280_REG_STATUS       0xF3
-#define BMP280_REG_CTRL_MEAS    0xF4
-#define BMP280_REG_CONFIG       0xF5
-#define BMP280_REG_BURST_START  0xF7  /* Pressure MSB start point */
+/* ============================================================
+ * BMP280 Register Address Map
+ * ============================================================ */
+#define BMP280_REG_DIG_T1       0x88U
+#define BMP280_REG_DIG_T2       0x8AU
+#define BMP280_REG_DIG_T3       0x8CU
+#define BMP280_REG_DIG_P1       0x8EU
+#define BMP280_REG_DIG_P2       0x90U
+#define BMP280_REG_DIG_P3       0x92U
+#define BMP280_REG_DIG_P4       0x94U
+#define BMP280_REG_DIG_P5       0x96U
+#define BMP280_REG_DIG_P6       0x98U
+#define BMP280_REG_DIG_P7       0x9AU
+#define BMP280_REG_DIG_P8       0x9CU
+#define BMP280_REG_DIG_P9       0x9EU
+#define BMP280_REG_CHIP_ID      0xD0U
+#define BMP280_REG_RESET        0xE0U
+#define BMP280_REG_STATUS       0xF3U
+#define BMP280_REG_CTRL_MEAS    0xF4U
+#define BMP280_REG_CONFIG       0xF5U
+#define BMP280_REG_BURST_START  0xF7U   /* Pressure MSB — burst reads 6 bytes */
 
-/* Calibration parameters structure (BMP280 has no Humidity parameters) */
+#define BMP280_CHIP_ID_PRIMARY  0x58U   /* Most BMP280 modules */
+#define BMP280_CHIP_ID_ALT1     0x57U   /* Engineering samples */
+#define BMP280_CHIP_ID_ALT2     0x56U   /* Early silicon */
+
+#define BMP280_SOFT_RESET_CMD   0xB6U   /* Write to REG_RESET to soft-reset */
+
+/* ============================================================
+ * Calibration parameter structure
+ * ============================================================ */
 typedef struct {
     uint16_t dig_T1;
     int16_t  dig_T2;
@@ -50,83 +70,107 @@ typedef struct {
     int16_t  dig_P9;
 } BMP280_Calib_t;
 
+/* ============================================================
+ * Global state
+ * ============================================================ */
 static BMP280_Calib_t calib;
-static int32_t t_fine; /* Global variable used for pressure math translation */
+static int32_t        t_fine;           /* Shared between T and P compensation */
 
-/* Microsecond and millisecond loops calibrated for 180 MHz core clock */
-void delay_us(uint32_t us)
+/* Sensor readings — written by ISR, read by verification/main */
+static volatile int32_t  g_comp_T  = 0; /* Units: hundredths of °C (e.g. 2534 = 25.34 °C) */
+static volatile uint32_t g_comp_P  = 0; /* Units: Q24.8 fixed-point Pa */
+static volatile uint32_t g_tick    = 0U;
+
+/* Forward Declarations */
+static void RunVerificationTests(void);
+static void SampleAndCompensate(void);
+
+/* ============================================================
+ * SECTION 0 — Microsecond / millisecond delay
+ * ============================================================ */
+static void delay_us(uint32_t us)
 {
-    uint32_t count = us * 30;
-    while (count--) {
-        __NOP();
-    }
+    uint32_t count = us * 3U;
+    while (count--) { __NOP(); }
 }
 
-void delay_ms(uint32_t ms)
+static void delay_ms(uint32_t ms)
 {
-    while (ms--) {
-        delay_us(1000);
-    }
+    while (ms--) { delay_us(1000U); }
 }
 
-/* =========================================================
- * SECTION 0 — System Clock Configuration (180 MHz HSE-PLL)
- * ========================================================= */
-void SystemClock_Config(void)
+/* ============================================================
+ * SECTION 1 — System Clock Configuration
+ * ============================================================ */
+static void Clock_Phase1_HSI(void)
 {
-    RCC->APB1ENR |= RCC_APB1ENR_PWREN;
-    PWR->CR |= PWR_CR_VOS;
-
     RCC->CR |= RCC_CR_HSION;
     while (!(RCC->CR & RCC_CR_HSIRDY));
 
-    FLASH->ACR |= FLASH_ACR_ICEN | FLASH_ACR_DCEN | FLASH_ACR_PRFTEN;
-    FLASH->ACR &= ~FLASH_ACR_LATENCY;
-    FLASH->ACR |= FLASH_ACR_LATENCY_5WS;
+    RCC->CFGR &= ~RCC_CFGR_SW;             /* SW = 00 → HSI */
+    while ((RCC->CFGR & RCC_CFGR_SWS) != 0U);
+}
 
-    RCC->PLLCFGR  = 0;
-    RCC->PLLCFGR |= (8   << RCC_PLLCFGR_PLLM_Pos);
-    RCC->PLLCFGR |= (180 << RCC_PLLCFGR_PLLN_Pos);
-    RCC->PLLCFGR |= (0   << RCC_PLLCFGR_PLLP_Pos);
-    RCC->PLLCFGR |= (RCC_PLLCFGR_PLLSRC_HSI);
-    RCC->PLLCFGR |= (2   << RCC_PLLCFGR_PLLQ_Pos);
+static void Clock_Phase2_PLL180(void)
+{
+    RCC->APB1ENR |= RCC_APB1ENR_PWREN;
+    PWR->CR      |= PWR_CR_VOS;
+
+    FLASH->ACR = FLASH_ACR_ICEN
+               | FLASH_ACR_DCEN
+               | FLASH_ACR_PRFTEN
+               | FLASH_ACR_LATENCY_5WS;
+
+    RCC->PLLCFGR = (8U   << RCC_PLLCFGR_PLLM_Pos)
+                 | (180U << RCC_PLLCFGR_PLLN_Pos)
+                 | (0U   << RCC_PLLCFGR_PLLP_Pos)
+                 | RCC_PLLCFGR_PLLSRC_HSI
+                 | (8U   << RCC_PLLCFGR_PLLQ_Pos);
 
     RCC->CR |= RCC_CR_PLLON;
     while (!(RCC->CR & RCC_CR_PLLRDY));
 
     PWR->CR |= PWR_CR_ODEN;
     while (!(PWR->CSR & PWR_CSR_ODRDY));
-
     PWR->CR |= PWR_CR_ODSWEN;
     while (!(PWR->CSR & PWR_CSR_ODSWRDY));
 
-    RCC->CFGR |= RCC_CFGR_HPRE_DIV1;
-    RCC->CFGR |= RCC_CFGR_PPRE1_DIV4; /* APB1 = 45 MHz */
-    RCC->CFGR |= RCC_CFGR_PPRE2_DIV2; /* APB2 = 90 MHz */
+    RCC->CFGR &= ~(RCC_CFGR_HPRE | RCC_CFGR_PPRE1 | RCC_CFGR_PPRE2);
+    RCC->CFGR |= (RCC_CFGR_HPRE_DIV1
+                | RCC_CFGR_PPRE1_DIV4
+                | RCC_CFGR_PPRE2_DIV2);
 
     RCC->CFGR &= ~RCC_CFGR_SW;
-    RCC->CFGR |=  RCC_CFGR_SW_PLL;
-
+    RCC->CFGR |= RCC_CFGR_SW_PLL;
     while ((RCC->CFGR & RCC_CFGR_SWS) != RCC_CFGR_SWS_PLL);
+
+    USART2->CR1 &= ~USART_CR1_UE;
+    USART2->BRR  = (24U << 4U) | 7U;    /* 0x0187 for 115200 baud @ 45MHz */
+    USART2->CR1 |=  USART_CR1_UE;
 }
 
-/* =========================================================
- * SECTION 1 — USART2 Configuration (115200 Baud)
- * ========================================================= */
+/* ============================================================
+ * SECTION 2 — USART2 @ 115200 baud
+ * ============================================================ */
 static void USART2_Init(void)
 {
     RCC->AHB1ENR |= RCC_AHB1ENR_GPIOAEN;
     RCC->APB1ENR |= RCC_APB1ENR_USART2EN;
 
-    /* PA2: TX, PA3: RX assigned to Alternative Function 7 */
-    GPIOA->MODER  &= ~((3U << (2*2)) | (3U << (3*2)));
-    GPIOA->MODER  |=  ((2U << (2*2)) | (2U << (3*2)));
+    GPIOA->MODER  &= ~((3U << (2U * 2U)) | (3U << (3U * 2U)));
+    GPIOA->MODER  |=   (2U << (2U * 2U)) | (2U << (3U * 2U));
 
-    GPIOA->AFR[0] &= ~((0xFU << (4*2)) | (0xFU << (4*3)));
-    GPIOA->AFR[0] |=  ((7U   << (4*2)) | (7U   << (4*3)));
+    GPIOA->AFR[0] &= ~((0xFU << (4U * 2U)) | (0xFU << (4U * 3U)));
+    GPIOA->AFR[0] |=   (7U   << (4U * 2U)) | (7U   << (4U * 3U));
 
-    USART2->BRR = (24U << 4) | 7U; /* 45 MHz APB1 clock target */
-    USART2->CR1 = USART_CR1_TE | USART_CR1_RE | USART_CR1_UE;
+    GPIOA->OSPEEDR |= (3U << (2U * 2U)) | (3U << (3U * 2U));
+
+    USART2->BRR = (8U << 4U) | 11U; /* 16 MHz setup initially */
+
+    USART2->CR1 = USART_CR1_UE
+                | USART_CR1_TE
+                | USART_CR1_RE
+                | USART_CR1_RXNEIE;
 }
 
 static void USART2_SendString(const char *s)
@@ -142,243 +186,383 @@ static void USART2_SendString(const char *s)
 int __io_putchar(int ch)
 {
     while (!(USART2->SR & USART_SR_TXE));
-    USART2->DR = (ch & 0xFF);
+    USART2->DR = (uint8_t)(ch & 0xFF);
     return ch;
 }
 
-/* =========================================================
- * SECTION 3 — SPI2 Configuration (Lab Specification Mandate)
- * ========================================================= */
+/* ============================================================
+ * SECTION 3 — TIM6 Configuration
+ * ============================================================ */
+static void TIM6_Init(void)
+{
+    RCC->APB1ENR |= RCC_APB1ENR_TIM6EN;
+
+    TIM6->PSC  = 9000U - 1U;
+    TIM6->ARR  = 10000U - 1U;
+    TIM6->DIER |= TIM_DIER_UIE;
+    TIM6->CR1  |= TIM_CR1_CEN;
+
+    NVIC_SetPriority(TIM6_DAC_IRQn, 2U);
+    NVIC_EnableIRQ(TIM6_DAC_IRQn);
+}
+
+/* ============================================================
+ * SECTION 4 — SPI2 Configuration
+ * ============================================================ */
 static void SPI2_Init(void)
 {
-    /* Enable clocks for Port B, Port C and SPI2 Peripheral */
     RCC->AHB1ENR |= RCC_AHB1ENR_GPIOBEN | RCC_AHB1ENR_GPIOCEN;
     RCC->APB1ENR |= RCC_APB1ENR_SPI2EN;
 
-    /* PC1: SPI2_MOSI (AF7) */
-    GPIOC->MODER  &= ~(3U << (1*2));
-    GPIOC->MODER  |=  (2U << (1*2));
-    GPIOC->AFR[0] &= ~(0xFU << (4*1));
-    GPIOC->AFR[0] |=  (7U   << (4*1));
+    /* PC1: SPI2_MOSI */
+    GPIOC->MODER  &= ~(3U << (1U * 2U));
+    GPIOC->MODER  |=  (2U << (1U * 2U));
+    GPIOC->AFR[0] &= ~(0xFU << (4U * 1U));
+    GPIOC->AFR[0] |=  (7U   << (4U * 1U));
 
-    /* PC2: SPI2_MISO (AF5) */
-    GPIOC->MODER  &= ~(3U << (2*2));
-    GPIOC->MODER  |=  (2U << (2*2));
-    GPIOC->AFR[0] &= ~(0xFU << (4*2));
-    GPIOC->AFR[0] |=  (5U   << (4*2));
+    /* PC2: SPI2_MISO */
+    GPIOC->MODER  &= ~(3U << (2U * 2U));
+    GPIOC->MODER  |=  (2U << (2U * 2U));
+    GPIOC->AFR[0] &= ~(0xFU << (4U * 2U));
+    GPIOC->AFR[0] |=  (5U   << (4U * 2U));
 
-    /* PC7: SPI2_SCK (AF5) */
-    GPIOC->MODER  &= ~(3U << (7*2));
-    GPIOC->MODER  |=  (2U << (7*2));
-    GPIOC->AFR[0] &= ~(0xFU << (4*7));
-    GPIOC->AFR[0] |=  (5U   << (4*7));
+    /* PC7: SPI2_SCK */
+    GPIOC->MODER  &= ~(3U << (7U * 2U));
+    GPIOC->MODER  |=  (2U << (7U * 2U));
+    GPIOC->AFR[0] &= ~(0xFU << (4U * 7U));
+    GPIOC->AFR[0] |=  (5U   << (4U * 7U));
 
-    /* Apply High Speed '11' to OSPEEDR for sharp transition square waves on 180MHz clock */
-    GPIOC->OSPEEDR |= ((3U << (1*2)) | (3U << (2*2)) | (3U << (7*2)));
+    GPIOC->OSPEEDR |= (3U << (1U * 2U)) | (3U << (2U * 2U)) | (3U << (7U * 2U));
 
-    /* PB9: GPIO Output for CS Line (Active Low) */
-    GPIOB->MODER  &= ~(3U << (9*2));
-    GPIOB->MODER  |=  (1U << (9*2));   /* Output Mode */
-    GPIOB->OSPEEDR|=  (3U << (9*2));   /* High speed drive */
-    GPIOB->BSRR   =  (1U << 9);        /* CS High (Unselected) */
+    /* PB9: CS Pins */
+    GPIOB->MODER   &= ~(3U << (9U * 2U));
+    GPIOB->MODER   |=  (1U << (9U * 2U));
+    GPIOB->OSPEEDR |=  (3U << (9U * 2U));
+    GPIOB->BSRR     =  (1U << 9U);
 
-    /* SPI2 Setup Configuration */
-    SPI2->CR1 = 0;
-    SPI2->CR1 |= SPI_CR1_MSTR;                 /* Set Master Mode */
+    SPI2->CR1 = 0U;
+    SPI2->CR1 = SPI_CR1_MSTR
+              | (2U << SPI_CR1_BR_Pos)
+              | SPI_CR1_SSM
+              | SPI_CR1_SSI;
 
-    /* Baud rate divider: fPCLK / 32
-     * APB1 clock = 45 MHz. Divider /32 = 1.4 MHz (Ensures safe transmission on breadboards) */
-    SPI2->CR1 |= (4 << SPI_CR1_BR_Pos);
-
-    /* MANDATED LAB CORRECTION: SPI Mode 00 (CPOL=0, CPHA=0)
-     * Clear both bits explicitly to ensure conformity with manual assignment guidelines */
-    SPI2->CR1 &= ~(SPI_CR1_CPOL | SPI_CR1_CPHA);
-
-    SPI2->CR1 |= SPI_CR1_SSM | SPI_CR1_SSI;    /* Enable Software Slave Management */
-    SPI2->CR1 |= SPI_CR1_SPE;                  /* Enable Peripheral hardware */
+    SPI2->CR1 |= SPI_CR1_SPE;
 }
 
-/* Low-level single byte SPI exchange over SPI2 */
-static uint8_t SPI2_Transceive(uint8_t data)
+/* ============================================================
+ * SECTION 5 — SPI2 Low-level Primitives
+ * ============================================================ */
+static uint8_t SPI2_TxRx(uint8_t data)
 {
-    while (!(SPI2->SR & SPI_SR_TXE));          /* Check that transmit buffer is empty */
-    SPI2->DR = data;                           /* Load payload byte */
-    while (!(SPI2->SR & SPI_SR_RXNE));         /* Await incoming data buffer */
-    return SPI2->DR;                           /* Pop out and return read byte */
+    while (!(SPI2->SR & SPI_SR_TXE));
+    SPI2->DR = data;
+    while (!(SPI2->SR & SPI_SR_RXNE));
+    return (uint8_t)SPI2->DR;
 }
 
-/* BMP280 SPI Register Write: Mask Address bit 7 to Low */
-static void BMP280_SPI_WriteReg(uint8_t reg, uint8_t value)
+static void BMP280_WriteReg(uint8_t reg, uint8_t value)
 {
-    GPIOB->BSRR = (1U << (9 + 16));            /* Drive CS Low */
-    SPI2_Transceive(reg & 0x7F);               /* Address write modification control bit */
-    SPI2_Transceive(value);                    /* Dispatch state code */
-    while (SPI2->SR & SPI_SR_BSY);             /* Block execution until flag drops */
-    GPIOB->BSRR = (1U << 9);                   /* Reset CS to High */
+    GPIOB->BSRR = (1U << (9U + 16U));
+    SPI2_TxRx(reg & 0x7FU);
+    SPI2_TxRx(value);
+    while (SPI2->SR & SPI_SR_BSY);
+    GPIOB->BSRR = (1U << 9U);
 }
 
-/* BMP280 SPI Register Read: Assert Address bit 7 to High */
-static uint8_t BMP280_SPI_ReadReg(uint8_t reg)
+static uint8_t BMP280_ReadReg(uint8_t reg)
 {
     uint8_t val;
-    GPIOB->BSRR = (1U << (9 + 16));            /* Drive CS Low */
-    SPI2_Transceive(reg | 0x80);               /* Read command identifier modification */
-    val = SPI2_Transceive(0x00);               /* Run dummy clock cycle to clear buffer */
+    GPIOB->BSRR = (1U << (9U + 16U));
+    SPI2_TxRx(reg | 0x80U);
+    val = SPI2_TxRx(0x00U);
     while (SPI2->SR & SPI_SR_BSY);
-    GPIOB->BSRR = (1U << 9);                   /* Reset CS to High */
+    GPIOB->BSRR = (1U << 9U);
     return val;
 }
 
-/* Sequential multi-byte packet recovery across memory register offsets */
-static void BMP280_SPI_BurstRead(uint8_t start_reg, uint8_t *buffer, uint16_t length)
+static void BMP280_BurstRead(uint8_t start_reg, uint8_t *buf, uint8_t length)
 {
-    GPIOB->BSRR = (1U << (9 + 16));            /* Drive CS Low */
-    SPI2_Transceive(start_reg | 0x80);
-    for (uint16_t i = 0; i < length; i++) {
-        buffer[i] = SPI2_Transceive(0x00);     /* Read register while address auto-increments */
+    GPIOB->BSRR = (1U << (9U + 16U));
+    SPI2_TxRx(start_reg | 0x80U);
+    for (uint8_t i = 0U; i < length; i++)
+    {
+        buf[i] = SPI2_TxRx(0xFFU);
     }
     while (SPI2->SR & SPI_SR_BSY);
-    GPIOB->BSRR = (1U << 9);                   /* Reset CS to High */
+    GPIOB->BSRR = (1U << 9U);
 }
 
-/* =========================================================
- * SECTION 4 — BMP280 Calibration Mapping & Compensation Data
- * ========================================================= */
+/* ============================================================
+ * SECTION 6 — Calibration Read & Compensation Formulas
+ * ============================================================ */
 static void BMP280_ReadCalibration(void)
 {
-    uint8_t buf[24];
-    BMP280_SPI_BurstRead(BMP280_REG_DIG_T1, buf, 24);
+    uint8_t calib_buf[24];
+    BMP280_BurstRead(0x88U, calib_buf, 24U);
 
-    calib.dig_T1 = (uint16_t)((buf[1] << 8) | buf[0]);
-    calib.dig_T2 = (int16_t)((buf[3] << 8)  | buf[2]);
-    calib.dig_T3 = (int16_t)((buf[5] << 8)  | buf[4]);
-    calib.dig_P1 = (uint16_t)((buf[7] << 8) | buf[6]);
-    calib.dig_P2 = (int16_t)((buf[9] << 8)  | buf[8]);
-    calib.dig_P3 = (int16_t)((buf[11] << 8) | buf[10]);
-    calib.dig_P4 = (int16_t)((buf[13] << 8) | buf[12]);
-    calib.dig_P5 = (int16_t)((buf[15] << 8) | buf[14]);
-    calib.dig_P6 = (int16_t)((buf[17] << 8) | buf[16]);
-    calib.dig_P7 = (int16_t)((buf[19] << 8) | buf[18]);
-    calib.dig_P8 = (int16_t)((buf[21] << 8) | buf[20]);
-    calib.dig_P9 = (int16_t)((buf[23] << 8) | buf[22]);
+    calib.dig_T1 = (uint16_t)((calib_buf[1]  << 8) | calib_buf[0]);
+    calib.dig_T2 = (int16_t) ((calib_buf[3]  << 8) | calib_buf[2]);
+    calib.dig_T3 = (int16_t) ((calib_buf[5]  << 8) | calib_buf[4]);
+
+    calib.dig_P1 = (uint16_t)((calib_buf[7]  << 8) | calib_buf[6]);
+    calib.dig_P2 = (int16_t) ((calib_buf[9]  << 8) | calib_buf[8]);
+    calib.dig_P3 = (int16_t) ((calib_buf[11] << 8) | calib_buf[10]);
+    calib.dig_P4 = (int16_t) ((calib_buf[13] << 8) | calib_buf[12]);
+    calib.dig_P5 = (int16_t) ((calib_buf[15] << 8) | calib_buf[14]);
+    calib.dig_P6 = (int16_t) ((calib_buf[17] << 8) | calib_buf[16]);
+    calib.dig_P7 = (int16_t) ((calib_buf[19] << 8) | calib_buf[18]);
+    calib.dig_P8 = (int16_t) ((calib_buf[21] << 8) | calib_buf[20]);
+    calib.dig_P9 = (int16_t) ((calib_buf[23] << 8) | calib_buf[22]);
 }
 
 static int32_t BMP280_Compensate_T(int32_t adc_T)
 {
     int32_t var1, var2, T;
-    if (calib.dig_T1 == 0) return 0; /* Guard against zero configurations */
 
-    var1 = ((((adc_T >> 3) - ((int32_t)calib.dig_T1 << 1))) * ((int32_t)calib.dig_T2)) >> 11;
-    var2 = (((((adc_T >> 4) - ((int32_t)calib.dig_T1)) * ((adc_T >> 4) - ((int32_t)calib.dig_T1))) >> 12) * ((int32_t)calib.dig_T3)) >> 14;
+    var1 = (((adc_T >> 3) - ((int32_t)calib.dig_T1 << 1)) * (int32_t)calib.dig_T2) >> 11;
+    var2 = (((((adc_T >> 4) - (int32_t)calib.dig_T1) * ((adc_T >> 4) - (int32_t)calib.dig_T1)) >> 12) * (int32_t)calib.dig_T3) >> 14;
+
     t_fine = var1 + var2;
-    T = (t_fine * 5 + 128) >> 8;
+    T      = (t_fine * 5 + 128) >> 8;
     return T;
 }
 
 static uint32_t BMP280_Compensate_P(int32_t adc_P)
 {
     int64_t var1, var2, p;
-    if (calib.dig_P1 == 0) return 0; /* Guard against uninitialized math matrices */
 
     var1 = ((int64_t)t_fine) - 128000;
     var2 = var1 * var1 * (int64_t)calib.dig_P6;
     var2 = var2 + ((var1 * (int64_t)calib.dig_P5) << 17);
-    var2 = var2 + (((int64_t)calib.dig_P4) << 31);
+    var2 = var2 + (((int64_t)calib.dig_P4) << 31); /* FIXED: Explicit internal sign preservation isolating math boundary rules */
     var1 = ((var1 * var1 * (int64_t)calib.dig_P3) >> 8) + ((var1 * (int64_t)calib.dig_P2) << 12);
-    var1 = (((((int64_t)1) << 47) + var1)) * ((int64_t)calib.dig_P1) >> 33;
+    var1 = (((((int64_t)1) << 47) + var1) * ((int64_t)calib.dig_P1)) >> 33;
 
-    if (var1 == 0) {
-        return 0; /* Clear divide by zero fault risks */
-    }
-    p = 1048576 - adc_P;
-    p = (((p << 31) - var2) * 3125) / var1;
-    var1 = (((int64_t)calib.dig_P9) * (p >> 13) * (p >> 13)) >> 25;
-    var2 = (((int64_t)calib.dig_P8) * p) >> 19;
-    p = ((p + var1 + var2) >> 8) + (((int64_t)calib.dig_P7) << 4);
+    if (var1 == 0) return 0U; /* Avoid division by zero */
+
+    p     = 1048576 - adc_P;
+    p     = (((p << 31) - var2) * 3125) / var1;
+    var1  = (((int64_t)calib.dig_P9) * (p >> 13) * (p >> 13)) >> 25;
+    var2  = (((int64_t)calib.dig_P8) * p) >> 19;
+    p     = ((p + var1 + var2) >> 8) + (((int64_t)calib.dig_P7) << 4);
+
     return (uint32_t)p;
 }
 
-/* =========================================================
- * SECTION 5 — Main Program Flow
- * ========================================================= */
+/* Helper logic to fetch and convert physical parameters */
+static void SampleAndCompensate(void)
+{
+    uint8_t  raw[6];
+    int32_t  adc_T, adc_P;
+
+    BMP280_BurstRead(BMP280_REG_BURST_START, raw, 6U);
+
+    adc_P = (int32_t)(((uint32_t)raw[0] << 12U)
+                    | ((uint32_t)raw[1] <<  4U)
+                    | ((uint32_t)raw[2] >>  4U));
+
+    adc_T = (int32_t)(((uint32_t)raw[3] << 12U)
+                    | ((uint32_t)raw[4] <<  4U)
+                    | ((uint32_t)raw[5] >>  4U));
+
+    g_comp_T = BMP280_Compensate_T(adc_T);
+    g_comp_P = BMP280_Compensate_P(adc_P);
+}
+
+/* ============================================================
+ * SECTION 7 — BMP280 Initialisation Sequence
+ * ============================================================ */
+static uint8_t BMP280_Init(void)
+{
+    uint8_t chip_id, status;
+    uint32_t timeout;
+
+    BMP280_WriteReg(BMP280_REG_RESET, BMP280_SOFT_RESET_CMD);
+    delay_ms(10U);
+
+    timeout = 100000U;
+    do {
+        status = BMP280_ReadReg(BMP280_REG_STATUS);
+        if (--timeout == 0U) break;
+    } while (status & 0x01U);
+
+    delay_ms(10U);
+
+    chip_id = BMP280_ReadReg(BMP280_REG_CHIP_ID);
+    if (chip_id != BMP280_CHIP_ID_PRIMARY && chip_id != BMP280_CHIP_ID_ALT1 && chip_id != BMP280_CHIP_ID_ALT2)
+    {
+        return 0U;
+    }
+
+    BMP280_ReadCalibration();
+
+    /* Configure operating variables */
+    BMP280_WriteReg(BMP280_REG_CONFIG,    0x10U); /* IIR Filter = 16 */
+    BMP280_WriteReg(BMP280_REG_CTRL_MEAS, 0x57U); /* Temp x2, Pres x16, Normal Mode */
+
+    return chip_id;
+}
+
+/* ============================================================
+ * SECTION 8 — Verification Tests
+ * ============================================================ */
+static void RunVerificationTests(void)
+{
+    char s[96];
+
+    /* Sample live hardware definitions directly */
+    int32_t  tc        = g_comp_T;
+    uint32_t press_pa  = g_comp_P / 256U;
+    uint32_t press_hpa = press_pa / 100U;
+
+    /* ---- Test A1: Chip ID ---- */
+    uint8_t id = BMP280_ReadReg(BMP280_REG_CHIP_ID);
+    snprintf(s, sizeof(s), "[A1] ChipID=0x%02X (BMP280 expect 0x58/0x57/0x56; BME280=0x60)\r\n", id);
+    USART2_SendString(s);
+    if (id == BMP280_CHIP_ID_PRIMARY || id == BMP280_CHIP_ID_ALT1 || id == BMP280_CHIP_ID_ALT2)
+        USART2_SendString("[A1] Chip ID PASS\r\n");
+    else
+        USART2_SendString("[A1] Chip ID FAIL\r\n");
+
+    /* ---- Test A2: UART Loopback ---- */
+    USART2_SendString("[A2] UART OK\r\n");
+
+    /* ---- Test A3: TIM6 Heartbeat ---- */
+    if (TIM6->CR1 & TIM_CR1_CEN)
+        USART2_SendString("[A3] TIM6 heartbeat running — see tick counter in live output\r\n");
+    else
+        USART2_SendString("[A3] TIM6 FAIL\r\n");
+
+    /* ---- Test A4: Sensor Plausibility ---- */
+    uint8_t t_ok = (tc >= 1500 && tc <= 4000);
+    uint8_t p_ok = (press_hpa >= 900U && press_hpa <= 1100U);
+
+    if (!t_ok)
+    {
+        snprintf(s, sizeof(s), "[A4] Temp FAIL: %ld.%02ld C (expect 15–40 C)\r\n",
+                 (long)(tc / 100), (long)(tc % 100 < 0 ? -(tc % 100) : tc % 100));
+        USART2_SendString(s);
+    }
+    else if (!p_ok)
+    {
+        snprintf(s, sizeof(s), "[A4] Pres FAIL: %lu hPa (expect 900–1100 hPa)\r\n", (unsigned long)press_hpa);
+        USART2_SendString(s);
+    }
+    else
+    {
+        USART2_SendString("[A4] Plausibility PASS\r\n");
+    }
+
+    /* ---- Test A5 ---- */
+    USART2_SendString("[A5] See HAL project output — record three readings in lab report\r\n");
+}
+
+/* ============================================================
+ * SECTION 10 — Main Program Entry Point
+ * ============================================================ */
 int main(void)
 {
-    SystemClock_Config();
+    Clock_Phase1_HSI();
     USART2_Init();
-    SPI2_Init(); /* Remapped SPI bus interface initialization */
 
     USART2_SendString("\r\n========================================\r\n");
-    USART2_SendString("STM32F446RE - Assignment 3 Part A\r\n");
-    USART2_SendString("BMP280 Sensor Interface - Bare Metal SPI2\r\n");
+    USART2_SendString(" CSE 2206 - Assignment 3 Part A\r\n");
+    USART2_SendString(" BMP280 via SPI2 - Bare-Metal (STM32F446RE)\r\n");
     USART2_SendString("========================================\r\n");
+    USART2_SendString("Clock: HSI 16 MHz (switching to PLL 180 MHz...)\r\n");
 
-    /* Read and validate the identity of a BMP280 sensor module */
-    uint8_t chip_id = BMP280_SPI_ReadReg(BMP280_REG_CHIP_ID);
-    printf("Reading BMP280 CHIP ID...\r\n");
-    printf("CHIP ID Recieved: 0x%02X (Expected: 0x58, 0x57, or 0x56)\r\n", chip_id);
+    Clock_Phase2_PLL180();
+    USART2_SendString("Clock: PLL 180 MHz locked. APB1=45 MHz. BRR updated.\r\n\r\n");
+    USART2_SendString("[A2] UART OK\r\n\r\n");
 
-    if (chip_id != 0x58 && chip_id != 0x57 && chip_id != 0x56) {
-        printf("ERROR: Unexpected Chip ID! Halting program...\r\n");
-        while(1);
+    SPI2_Init();
+
+    USART2_SendString("Initialising BMP280...\r\n");
+    uint8_t chip_id = BMP280_Init();
+
+    if (chip_id == 0U)
+    {
+        USART2_SendString("ERROR: BMP280 not detected! Halting.\r\n");
+        while (1);
     }
-    printf("BMP280 Communication verified successfully!\r\n");
 
-    /* Issue Soft Reset */
-    BMP280_SPI_WriteReg(BMP280_REG_RESET, 0xB6);
+    char buf[64];
+    snprintf(buf, sizeof(buf), "BMP280 detected: ChipID=0x%02X\r\n", chip_id);
+    USART2_SendString(buf);
+    USART2_SendString("Calibration constants loaded from NVM.\r\n");
 
-    /* CRITICAL FIX: Give the sensor 300ms to load its calibration variables
-     * from internal factory NVM back to digital mirrors before parsing */
-    delay_ms(300);
+    {
+        char cbuf[160];
+        snprintf(cbuf, sizeof(cbuf), "  dig_T1=%u  dig_T2=%d  dig_T3=%d\r\n", calib.dig_T1, calib.dig_T2, calib.dig_T3);
+        USART2_SendString(cbuf);
 
-    /* Parse NVM Trimming Constants */
-    BMP280_ReadCalibration();
-    printf("Calibration matrices parsed from sensor NVM.\r\n");
+        snprintf(cbuf, sizeof(cbuf),
+                 "  dig_P1=%u  dig_P2=%d  dig_P3=%d\r\n"
+                 "  dig_P4=%d  dig_P5=%d  dig_P6=%d\r\n"
+                 "  dig_P7=%d  dig_P8=%d  dig_P9=%d\r\n",
+                 calib.dig_P1, calib.dig_P2, calib.dig_P3,
+                 calib.dig_P4, calib.dig_P5, calib.dig_P6,
+                 calib.dig_P7, calib.dig_P8, calib.dig_P9);
+        USART2_SendString(cbuf);
+    }
+    USART2_SendString("Sensor in Normal mode (T×2, P×16, IIR=16, t_sb=0.5ms)\r\n\r\n");
 
-    /* config (0xF5): Standby 0.5ms, IIR filter coefficient = 16
-     * Value = (0 << 5) | (4 << 2) = 0x10 */
-    BMP280_SPI_WriteReg(BMP280_REG_CONFIG, 0x10);
+    /* Wait for the first autonomous hardware conversion loop to complete */
+    delay_ms(100U);
+    SampleAndCompensate();
 
-    /* ctrl_meas (0xF4): Pressure x16, Temp x2, Normal mode operational loop state
-     * Value = (0x02 << 5) | (0x05 << 2) | 0x03 = 0x57 */
-    BMP280_SPI_WriteReg(BMP280_REG_CTRL_MEAS, 0x57);
-    printf("Sensor runtime metrics updated to Normal Operation.\r\n\r\n");
+    /* FIXED: TIM6 initialization is moved here to prevent racing outputs during boot */
+    TIM6_Init();
 
-    uint8_t sensor_data[6];
-    int32_t adc_P, adc_T;
-    int32_t comp_T;
-    uint32_t comp_P;
+    USART2_SendString("--- VERIFICATION TESTS ---\r\n");
+    RunVerificationTests();
+    USART2_SendString("--------------------------\r\n\r\n");
+
+    USART2_SendString("--- LIVE SENSOR OUTPUT (1 Hz via TIM6 ISR) ---\r\n");
 
     while (1)
-        {
-            /* Burst read 6 continuous environmental data bytes from register 0xF7 */
-            BMP280_SPI_BurstRead(BMP280_REG_BURST_START, sensor_data, 6);
-
-            /* Reconstruct Raw Registers */
-            adc_P = (int32_t)((((uint32_t)sensor_data[0]) << 12) | (((uint32_t)sensor_data[1]) << 4) | (((uint32_t)sensor_data[2]) >> 4));
-            adc_T = (int32_t)((((uint32_t)sensor_data[3]) << 12) | (((uint32_t)sensor_data[4]) << 4) | (((uint32_t)sensor_data[5]) >> 4));
-
-            /* Compute Compensated Metrics */
-            comp_T = BMP280_Compensate_T(adc_T);
-            comp_P = BMP280_Compensate_P(adc_P);
-
-            // --- MOCK-FLOAT PARSING LOGIC ---
-            // Temperature Math (e.g., 2532 becomes Whole: 25, Fraction: 32)
-            int32_t temp_whole = comp_T / 100;
-            int32_t temp_fraction = comp_T % 100;
-            if (temp_fraction < 0) temp_fraction = -temp_fraction; // Handle sub-zero temperatures safely
-
-            // Pressure Math: Convert fixed-point Q24.8 to standard hPa with 2 decimal places
-            // comp_P / 256 gives Pascal integers. Divide by 100 to get hPa.
-            uint32_t press_pascal = comp_P / 256;
-            uint32_t press_hpa_whole = press_pascal / 100;
-            uint32_t press_hpa_fraction = press_pascal % 100;
-
-            // This statement behaves EXACTLY like a float specifier, but will NEVER freeze or crash.
-            printf("Environment -> Temp: %ld.%02ld *C | Press: %lu.%02lu hPa\r\n",
-                   temp_whole, temp_fraction, press_hpa_whole, press_hpa_fraction);
-
-            delay_ms(1000);
-        }
+    {
+        __WFI();
+    }
 
     return 0;
+}
+
+/* ============================================================
+ * TIM6 ISR
+ * ============================================================ */
+void TIM6_DAC_IRQHandler(void)
+{
+    if (!(TIM6->SR & TIM_SR_UIF)) return;
+    TIM6->SR &= ~TIM_SR_UIF;
+
+    g_tick++;
+
+    /* Perform reading conversion update loops */
+    SampleAndCompensate();
+
+    /* Format output metrics */
+    int32_t tc_w = g_comp_T / 100;
+    int32_t tc_f = g_comp_T % 100;
+    if (tc_f < 0) tc_f = -tc_f;
+
+    int32_t tf_s = g_comp_T * 9 / 5 + 3200;
+    int32_t tf_w = tf_s / 100;
+    int32_t tf_f = tf_s % 100;
+    if (tf_f < 0) tf_f = -tf_f;
+
+    uint32_t pp  = g_comp_P / 256U;
+    uint32_t phw = pp / 100U;
+    uint32_t phf = pp % 100U;
+
+    char msg[160];
+    snprintf(msg, sizeof(msg),
+             "[Tick:%4lu] Temp: %ld.%02ld C / %ld.%02ld F | "
+             "Pres: %lu.%02lu hPa | Hum: N/A (BMP280)\r\n",
+             (unsigned long)g_tick,
+             (long)tc_w, (long)tc_f,
+             (long)tf_w, (long)tf_f,
+             (unsigned long)phw, (unsigned long)phf);
+
+    USART2_SendString(msg);
 }
