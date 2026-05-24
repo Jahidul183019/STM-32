@@ -2,6 +2,12 @@
 
 This folder contains the bare-metal BMP280 sensor projects for Assignment 3 on the NUCLEO-F446RE.
 
+## Board Pinout Reference
+
+![NUCLEO-F446RE pinout reference](assets/nucleo-f446re-pinout.png)
+
+The reference image file should be placed at `Assignment 3/assets/nucleo-f446re-pinout.png`.
+
 ## Part A - BMP280 over SPI
 
 Part A uses the BMP280 in SPI mode.
