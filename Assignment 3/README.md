@@ -14,6 +14,8 @@ Part A uses the BMP280 in SPI mode.
 
 | BMP280 pin | Connection |
 | --- | --- |
+| VCC | 3.3V |
+| GND | GND |
 | SCL | D9 |
 | SDA | A4 |
 | CS | D14 |
