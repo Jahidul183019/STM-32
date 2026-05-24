@@ -1,7 +1,3 @@
-# Assignment 3
-
-This folder contains the bare-metal BMP280 sensor projects for Assignment 3 on the NUCLEO-F446RE.
-
 ## Board Pinout Reference
 
 ![NUCLEO-F446RE pinout reference](assets/nucleo-f446re-pinout.png)
