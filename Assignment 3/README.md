@@ -12,25 +12,33 @@ The reference image is stored in the repo at `Assignment 3/assets/nucleo-f446re-
 
 Part A uses the BMP280 in SPI mode.
 
-| Signal | STM32F446RE pin | Mode | Notes |
-| --- | --- | --- | --- |
-| SPI2_MOSI | PC1 | AF7 | Data out to BMP280 |
-| SPI2_MISO | PC2 | AF5 | Data in from BMP280 |
-| SPI2_SCK | PC7 | AF5 | SPI clock |
-| CS | PB9 | GPIO output | Active low chip select |
-| USART2_TX | PA2 | AF7 | Serial log output |
-| USART2_RX | PA3 | AF7 | Serial log input |
+### BMP280 Module Wiring
+
+| BMP280 pin | Connection |
+| --- | --- |
+| VCC | 3.3V |
+| GND | GND |
+| SCL | D9 |
+| SDA | A4 |
+| CS | D14 |
+| SDO | A4 |
+
 
 ## Part B - BMP280 over I2C
 
 Part B uses the BMP280 in I2C mode.
 
-| Signal | STM32F446RE pin | Mode | Notes |
-| --- | --- | --- | --- |
-| I2C1_SCL | PB6 | AF4 | Open-drain with pull-up |
-| I2C1_SDA | PB7 | AF4 | Open-drain with pull-up |
-| USART2_TX | PA2 | AF7 | Serial log output |
-| USART2_RX | PA3 | AF7 | Serial log input |
+### BMP280 Module Wiring
+
+| BMP280 pin | Connection |
+| --- | --- |
+| VCC | 3.3V |
+| GND | GND |
+| SCL | PB6 (D10) |
+| SDA | PB7 (CN7-21) |
+| CSB | 3.3V |
+| SDO | GND for I2C |
+
 
 ## Project Map
 
