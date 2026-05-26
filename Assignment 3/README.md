@@ -37,6 +37,6 @@ Part B uses the BMP280 in I2C mode.
 ## Project Map
 
 - [Part A BareMetal](PartA_BareMetal)
+-  [Part A HAL](PartA_HAL)
 - [Part B BareMetal](PartB_BareMetal)
-- [Part A HAL](PartA_HAL)
 - [Part B HAL](PartB_HAL)
