@@ -38,3 +38,5 @@ Part B uses the BMP280 in I2C mode.
 
 - [Part A BareMetal](PartA_BareMetal)
 - [Part B BareMetal](PartB_BareMetal)
+- [Part A BareMetal](PartA_HAL)
+- [Part B BareMetal](PartB_HAL)
