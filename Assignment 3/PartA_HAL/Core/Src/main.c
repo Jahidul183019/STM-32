@@ -298,7 +298,7 @@ static uint32_t BMP280_Compensate_P(int32_t adc_P)
     var1 = ((int64_t)t_fine) - 128000;
     var2 = var1 * var1 * (int64_t)calib.dig_P6;
     var2 = var2 + ((var1 * (int64_t)calib.dig_P5) << 17);
-    var2 = var2 + (((int64_t)calib.dig_P4) << 31);
+    var2 = var2 + (((int64_t)calib.dig_P4) << 35);
     var1 = ((var1 * var1 * (int64_t)calib.dig_P3) >> 8) + ((var1 * (int64_t)calib.dig_P2) << 12);
     var1 = (((((int64_t)1) << 47) + var1) * ((int64_t)calib.dig_P1)) >> 33;
 
