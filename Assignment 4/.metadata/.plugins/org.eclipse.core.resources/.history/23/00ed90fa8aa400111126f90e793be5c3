@@ -1,0 +1,459 @@
+/*
+ * ============================================================
+ * CSE 2206 — Microcontroller & Embedded Systems Lab
+ * Lab 04: Flash Data Logging  — FLASH-ONLY SUBSET (+ dummy Milestone D)
+ *          — BARE-METAL (Register-Level) Implementation
+ * Author    : Jahidul Islam
+ * Platform  : STM32F446RE Nucleo-64 (STM32F446RE, RM0390)
+ * Clock     : SYSCLK = 16 MHz (HSI, default — no PLL needed for this lab)
+ *
+ * SCOPE OF THIS FILE
+ * -------------------
+ * Milestone B (Flash utilities), Milestone C (identity storage), and
+ * Milestone E/F (boot display + persistence) are the same as the
+ * earlier Flash-only build.
+ *
+ * Milestone D is now RE-ADDED, but with the ADC swapped out for a
+ * deterministic dummy data generator. This build has NO ADC1
+ * configuration and NO potentiometer wiring dependency — the four
+ * "per-resolution voltages" are computed the same way real ADC
+ * codes would be (raw_code / max_code * VREF, averaged over
+ * NUM_SAMPLES), except raw_code comes from a small pseudo-random
+ * generator instead of ADC1->DR. This keeps Milestone E's literal
+ * spec intact (display four real-looking per-resolution voltages)
+ * and keeps TC8/TC10-style checks meaningful (all four values stay
+ * consistent with each other because they're derived from the same
+ * underlying simulated "pot position" every run) — without needing
+ * the ADC peripheral or hardware at all.
+ *
+ * IMPORTANT: this dummy data is NOT a substitute for the real ADC
+ * milestone (A) — it only exists so the Flash logging pipeline (D's
+ * output feeding into E's display) can be exercised end-to-end while
+ * this build stays scoped to Flash. Say so explicitly in your report
+ * if this build is what you submit for the Flash-only portion.
+ *
+ * Pin Mapping:
+ * PA2  -> USART2_TX  (AF7)
+ * PA3  -> USART2_RX  (AF7)
+ *
+ * Flash Layout (RM0390 Ch.3 sector table — confirmed for STM32F446RE):
+ * Sector 6 (base 0x08040000, 128KB) : Student identity block (write-once)
+ * Sector 7 (base 0x08060000, 128KB) : Per-resolution results block
+ *                                      (erased + rewritten on every
+ *                                      UART trigger)
+ * ============================================================
+ */
+
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#include <stm32f446xx.h>
+
+/* ============================================================
+ *  Build-time switch — Milestone C provisioning
+ * ============================================================ */
+#define PROVISION_IDENTITY_BUILD   0
+
+/* ============================================================
+ *  Flash layout constants
+ * ============================================================ */
+#define IDENTITY_SECTOR     6U
+#define IDENTITY_BASE       0x08040000U
+#define RESULTS_SECTOR      7U
+#define RESULTS_BASE        0x08060000U
+
+#define IDENTITY_MARKER     0xB1010001U
+#define RESULTS_MARKER      0xCAFEBABEU
+#define ERASED_WORD         0xFFFFFFFFU
+
+#define FLASH_KEY1          0x45670123U
+#define FLASH_KEY2          0xCDEF89ABU
+
+/* ============================================================
+ *  Dummy "acquisition" parameters (replaces ADC_* constants)
+ * ============================================================ */
+#define NUM_SAMPLES          16U      /* samples averaged per resolution, mirrors Sec.8 */
+#define VREF_MV              3300U    /* VREF+ in millivolts (board supply, ~3.3V) */
+
+/* Same RES encodings the real ADC1_CR1.RES field would use — kept
+ * here purely as labels for the four max-code values, since there's
+ * no ADC1 register being written in this build. */
+#define RES_12BIT   0x0U   /* max code 4095 */
+#define RES_10BIT   0x1U   /* max code 1023 */
+#define RES_8BIT    0x2U   /* max code 255  */
+#define RES_6BIT    0x3U   /* max code 63   */
+
+/* ============================================================
+ *  Data layouts
+ * ============================================================ */
+typedef struct {
+    uint32_t marker;
+    char     registration[16];
+    char     roll[12];
+    char     name[32];
+} StudentInfo_t;                /* 64 bytes — word aligned */
+
+/* Restored to the original Milestone D shape: one averaged voltage
+ * per resolution, plus a validity marker. */
+typedef struct {
+    uint32_t marker;    /* RESULTS_MARKER if valid */
+    uint32_t mv12;       /* voltage in mV at 12-bit resolution */
+    uint32_t mv10;
+    uint32_t mv8;
+    uint32_t mv6;
+} ResultsBlock_t;        /* 20 bytes = 5 words */
+
+static const StudentInfo_t student_data = {
+    .marker       = IDENTITY_MARKER,
+    .registration = "2023015944",
+    .roll         = "01",
+    .name         = "MD.Jahidul Islam Sarker"
+};
+
+/* ============================================================
+ *  Small delay helpers (busy-wait, HSI 16 MHz, no SysTick config)
+ * ============================================================ */
+static void delay_us(uint32_t us) {
+    uint32_t count = us * 4U;
+    while (count--) { __NOP(); }
+}
+static void delay_ms(uint32_t ms) {
+    while (ms--) { delay_us(1000U); }
+}
+
+/* ============================================================
+ *  USART2 — polling TX, polling RX for the UART auto-trigger
+ * ============================================================ */
+static void USART2_Init(void) {
+    RCC->AHB1ENR |= RCC_AHB1ENR_GPIOAEN;
+    RCC->APB1ENR |= RCC_APB1ENR_USART2EN;
+
+    GPIOA->MODER  &= ~((3U << (2U * 2U)) | (3U << (3U * 2U)));
+    GPIOA->MODER  |=   (2U << (2U * 2U)) | (2U << (3U * 2U));
+
+    GPIOA->AFR[0] &= ~((0xFU << (4U * 2U)) | (0xFU << (4U * 3U)));
+    GPIOA->AFR[0] |=   (7U   << (4U * 2U)) | (7U   << (4U * 3U));
+
+    GPIOA->OSPEEDR |= (3U << (2U * 2U)) | (3U << (3U * 2U));
+
+    /* Baud rate: USARTDIV = f_PCLK / (16 * baud) = 16e6 / (16*115200) = 8.6806
+     * BRR = mantissa[15:4] | fraction[3:0]
+     * mantissa = 8, fraction = round(0.6806 * 16) = 11 (0xB)
+     * (RM0390 Sec 19.3.4, "USART baud rate generation")
+     * NOTE: the assignment does not mandate a specific baud rate — this
+     * value is chosen to match the HAL build's CubeMX-generated config
+     * (huart2.Init.BaudRate = 115200), not because the handout requires it. */
+    USART2->BRR = (8U << 4U) | 11U;
+
+    USART2->CR1 = USART_CR1_UE | USART_CR1_TE | USART_CR1_RE;
+}
+
+static void USART2_SendString(const char *s) {
+    while (*s) {
+        while (!(USART2->SR & USART_SR_TXE)) {}
+        USART2->DR = (uint8_t)(*s++);
+    }
+    while (!(USART2->SR & USART_SR_TC)) {}
+}
+
+static uint8_t USART2_TryReceive(uint8_t *out) {
+    if (USART2->SR & USART_SR_RXNE) {
+        *out = (uint8_t)USART2->DR;
+        return 1U;
+    }
+    return 0U;
+}
+
+static void USART2_DebounceFlush(void) {
+    uint8_t dump;
+    uint32_t quiet_ms = 0U;
+    while (quiet_ms < 50U) {
+        if (USART2_TryReceive(&dump)) {
+            quiet_ms = 0U;
+        } else {
+            delay_ms(1U);
+            quiet_ms++;
+        }
+    }
+}
+
+/* ============================================================
+ *  Flash utility functions — register-level (Milestone B)
+ * ============================================================ */
+static void Flash_Unlock(void) {
+    if (FLASH->CR & FLASH_CR_LOCK) {
+        FLASH->KEYR = FLASH_KEY1;
+        FLASH->KEYR = FLASH_KEY2;
+    }
+}
+
+static void Flash_Lock(void) {
+    FLASH->CR |= FLASH_CR_LOCK;
+}
+
+static void Flash_WaitBusy(void) {
+    while (FLASH->SR & FLASH_SR_BSY) {}
+}
+
+static void Flash_EraseSector(uint8_t sectorNum) {
+    Flash_WaitBusy();
+    Flash_Unlock();
+
+    FLASH->CR &= ~FLASH_CR_SNB;
+    FLASH->CR |= FLASH_CR_SER;
+    FLASH->CR |= ((uint32_t)sectorNum << FLASH_CR_SNB_Pos);
+    FLASH->CR |= FLASH_CR_STRT;
+
+    Flash_WaitBusy();
+
+    FLASH->CR &= ~FLASH_CR_SER;
+    Flash_Lock();
+}
+
+static void Flash_WriteWord(uint32_t addr, uint32_t data) {
+    Flash_WaitBusy();
+    Flash_Unlock();
+
+    FLASH->CR &= ~FLASH_CR_PSIZE;
+    FLASH->CR |= FLASH_CR_PSIZE_1;
+    FLASH->CR |= FLASH_CR_PG;
+
+    *(volatile uint32_t *)addr = data;
+
+    Flash_WaitBusy();
+
+    FLASH->CR &= ~FLASH_CR_PG;
+    Flash_Lock();
+}
+
+static uint32_t Flash_ReadWord(uint32_t addr) {
+    return *(volatile uint32_t *)addr;
+}
+
+static void Flash_WriteBlock(uint32_t addr, const uint32_t *data, uint32_t nwords) {
+    for (uint32_t i = 0U; i < nwords; i++) {
+        Flash_WriteWord(addr + (i * 4U), data[i]);
+    }
+}
+
+/**
+ * @brief  Milestone B checkpoint (TC2/TC3).
+ * @return 1 if every check passed, 0 on the first mismatch.
+ */
+static uint8_t Flash_SelfTest(void) {
+    Flash_EraseSector(RESULTS_SECTOR);
+    if (Flash_ReadWord(RESULTS_BASE) != ERASED_WORD) return 0U;
+
+    Flash_WriteWord(RESULTS_BASE, 0xDEADBEEFU);
+    if (Flash_ReadWord(RESULTS_BASE) != 0xDEADBEEFU) return 0U;
+
+    Flash_EraseSector(RESULTS_SECTOR);
+    return 1U;
+}
+
+/* ============================================================
+ *  Milestone C — Student identity block (Sector 6, write-once)
+ * ============================================================ */
+static void Flash_ProvisionIdentity(void) {
+    Flash_EraseSector(IDENTITY_SECTOR);
+    Flash_WriteBlock(IDENTITY_BASE, (const uint32_t *)&student_data,
+                      sizeof(StudentInfo_t) / 4U);
+}
+
+static void Display_Identity(void) {
+    uint32_t marker = Flash_ReadWord(IDENTITY_BASE);
+    char line[96];
+
+    if (marker == IDENTITY_MARKER) {
+        const StudentInfo_t *info = (const StudentInfo_t *)IDENTITY_BASE;
+        USART2_SendString("---- Student Identity (Sector 6) ----\r\n");
+        snprintf(line, sizeof(line), "Registration : %.16s\r\n", info->registration);
+        USART2_SendString(line);
+        snprintf(line, sizeof(line), "Roll         : %.12s\r\n", info->roll);
+        USART2_SendString(line);
+        snprintf(line, sizeof(line), "Name         : %.32s\r\n", info->name);
+        USART2_SendString(line);
+    } else if (marker == ERASED_WORD) {
+        USART2_SendString("---- Student Identity ----\r\n");
+        USART2_SendString("NOT YET PROVISIONED - rebuild with\r\n");
+        USART2_SendString("PROVISION_IDENTITY_BUILD=1 and flash once.\r\n");
+    } else {
+        USART2_SendString("---- Student Identity ----\r\n");
+        USART2_SendString("Unrecognised marker - identity block may be corrupt.\r\n");
+    }
+    USART2_SendString("--------------------------------------\r\n");
+}
+
+/* ============================================================
+ *  Milestone D (DUMMY) — deterministic per-resolution data,
+ *  no ADC hardware involved
+ * ============================================================ */
+
+/**
+ * @brief  Tiny linear congruential generator, seeded per test run.
+ *         Only used to add small jitter to simulated ADC samples so
+ *         the "averaging" step in Dummy_MeasureResolution_mV has
+ *         something to actually average, matching the shape of the
+ *         real Milestone D acquisition loop.
+ */
+static uint32_t rng_state = 1U;
+static uint32_t Dummy_Rand(void) {
+    rng_state = rng_state * 1103515245U + 12345U;
+    return (rng_state >> 16) & 0x7FFFU;
+}
+
+/**
+ * @brief  Look up the maximum code for a given (simulated) resolution.
+ *         Identical role to the real Milestone A/D ADC_MaxCode().
+ */
+static uint32_t Dummy_MaxCode(uint8_t res_bits) {
+    switch (res_bits) {
+        case RES_12BIT: return 4095U;
+        case RES_10BIT: return 1023U;
+        case RES_8BIT:  return 255U;
+        case RES_6BIT:  return 63U;
+        default:        return 4095U;
+    }
+}
+
+/**
+ * @brief  Simulate NUM_SAMPLES raw ADC codes at the given resolution
+ *         and convert their average to millivolts — same formula the
+ *         real ADC path uses (V = avg_code/max_code * VREF), just
+ *         with avg_code coming from a pseudo-random generator instead
+ *         of ADC1->DR.
+ * @param  res_bits          One of RES_12BIT / 10BIT / 8BIT / 6BIT.
+ * @param  base_fraction_ppm  Simulated "pot position" as parts-per-
+ *                             thousand (0-1000), shared across all
+ *                             four resolutions in one test run so the
+ *                             four results stay consistent with each
+ *                             other (mirrors TC10's expectation that
+ *                             same-position readings track together).
+ * @return Averaged voltage in millivolts.
+ */
+static uint32_t Dummy_MeasureResolution_mV(uint8_t res_bits, uint32_t base_fraction_ppt) {
+    uint32_t max_code = Dummy_MaxCode(res_bits);
+    uint32_t target_code = (max_code * base_fraction_ppt) / 1000U;
+    uint32_t sum = 0U;
+
+    for (uint32_t i = 0U; i < NUM_SAMPLES; i++) {
+        int32_t jitter = (int32_t)(Dummy_Rand() % 3U) - 1;  /* -1, 0, or +1 LSB of noise */
+        int32_t sample = (int32_t)target_code + jitter;
+        if (sample < 0) sample = 0;
+        if ((uint32_t)sample > max_code) sample = (int32_t)max_code;
+        sum += (uint32_t)sample;
+    }
+
+    uint32_t avg_code = sum / NUM_SAMPLES;
+    return (avg_code * VREF_MV) / max_code;
+}
+
+/**
+ * @brief  Read the results block's marker word and print the stored
+ *         per-resolution voltages if valid, or "no previous test
+ *         data" if blank.
+ */
+static void Display_Results(void) {
+    uint32_t marker = Flash_ReadWord(RESULTS_BASE);
+    char line[64];
+
+    USART2_SendString("---- Last Test Results (Sector 7) ----\r\n");
+    if (marker == RESULTS_MARKER) {
+        const ResultsBlock_t *r = (const ResultsBlock_t *)RESULTS_BASE;
+        snprintf(line, sizeof(line), "12-bit: %lu.%03lu V\r\n",
+                 (unsigned long)(r->mv12 / 1000U), (unsigned long)(r->mv12 % 1000U));
+        USART2_SendString(line);
+        snprintf(line, sizeof(line), "10-bit: %lu.%03lu V\r\n",
+                 (unsigned long)(r->mv10 / 1000U), (unsigned long)(r->mv10 % 1000U));
+        USART2_SendString(line);
+        snprintf(line, sizeof(line), " 8-bit: %lu.%03lu V\r\n",
+                 (unsigned long)(r->mv8 / 1000U), (unsigned long)(r->mv8 % 1000U));
+        USART2_SendString(line);
+        snprintf(line, sizeof(line), " 6-bit: %lu.%03lu V\r\n",
+                 (unsigned long)(r->mv6 / 1000U), (unsigned long)(r->mv6 % 1000U));
+        USART2_SendString(line);
+    } else {
+        USART2_SendString("No previous test data.\r\n");
+    }
+    USART2_SendString("---------------------------------------\r\n");
+}
+
+/**
+ * @brief  Milestone D (dummy): sweep all four resolutions using
+ *         simulated data, average NUM_SAMPLES readings at each,
+ *         convert to millivolts, and store all four results into
+ *         Sector 7 (overwriting whatever was there). The simulated
+ *         "pot position" changes on every call so repeated runs
+ *         produce different-but-plausible values (see TC9).
+ */
+static void Run_MultiResolutionTest_Dummy(void) {
+    ResultsBlock_t result;
+
+    /* Reseed and pick a new simulated pot position every run so
+     * back-to-back UART triggers don't produce identical results
+     * (TC9: "no mixing of old/new data" implies the new run should
+     * visibly differ, not just re-store the same numbers). */
+    rng_state ^= (rng_state << 13) ^ 0x9E3779B9U;
+    uint32_t base_fraction_ppt = Dummy_Rand() % 1001U; /* 0..1000 */
+
+    USART2_SendString("\r\n>> Running multi-resolution test suite (DUMMY DATA, no ADC)...\r\n");
+
+    result.marker = RESULTS_MARKER;
+    result.mv12   = Dummy_MeasureResolution_mV(RES_12BIT, base_fraction_ppt);
+    result.mv10   = Dummy_MeasureResolution_mV(RES_10BIT, base_fraction_ppt);
+    result.mv8    = Dummy_MeasureResolution_mV(RES_8BIT,  base_fraction_ppt);
+    result.mv6    = Dummy_MeasureResolution_mV(RES_6BIT,  base_fraction_ppt);
+
+    Flash_EraseSector(RESULTS_SECTOR);
+    Flash_WriteBlock(RESULTS_BASE, (const uint32_t *)&result,
+                      sizeof(ResultsBlock_t) / 4U);
+
+    USART2_SendString(">> Test suite complete, results stored.\r\n");
+}
+
+/* ============================================================
+ *  main()
+ *
+ *  Boot sequence, every reset:
+ *    1. Bring up USART2.
+ *    2. (Provisioning builds only) write the identity block once,
+ *       then halt.
+ *    3. Display the identity block (Sector 6).
+ *    4. Display the previous test results, or "no data" (Sector 7).
+ *    5. Wait for any UART byte -> run the dummy 4-resolution sweep ->
+ *       update Sector 7 -> redisplay -> wait again.
+ * ============================================================ */
+int main(void) {
+    USART2_Init();
+
+    USART2_SendString("\r\n========================================\r\n");
+    USART2_SendString(" CSE 2206 - Lab 04 (Flash-only + dummy D)\r\n");
+    USART2_SendString(" Flash Data Logging (no ADC hardware used)\r\n");
+    USART2_SendString(" Bare-Metal (Register-Level), STM32F446RE\r\n");
+    USART2_SendString("========================================\r\n");
+
+#if PROVISION_IDENTITY_BUILD
+    USART2_SendString("\r\n*** PROVISIONING BUILD ***\r\n");
+    Flash_ProvisionIdentity();
+    USART2_SendString("Identity written to Sector 6.\r\n");
+    USART2_SendString("Rebuild with PROVISION_IDENTITY_BUILD=0 and reflash.\r\n");
+    while (1) { __WFI(); }
+#endif
+
+    Display_Identity();
+    Display_Results();
+
+    USART2_SendString("\r\nSend any byte over UART to run the test suite...\r\n");
+
+    uint8_t rx;
+    while (1) {
+        if (USART2_TryReceive(&rx)) {
+            (void)rx;
+            USART2_DebounceFlush();
+            Run_MultiResolutionTest_Dummy();
+            Display_Results();
+            USART2_SendString("\r\nSend any byte to re-run the test suite...\r\n");
+        }
+    }
+    return 0;
+}

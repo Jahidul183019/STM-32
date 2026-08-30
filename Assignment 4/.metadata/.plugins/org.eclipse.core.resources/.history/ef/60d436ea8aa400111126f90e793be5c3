@@ -1,0 +1,594 @@
+/* USER CODE BEGIN Header */
+/**
+  ******************************************************************************
+  * @file           : main.c
+  * @brief          : Main program body
+  ******************************************************************************
+  * @attention
+  *
+  * Copyright (c) 2026 STMicroelectronics.
+  * All rights reserved.
+  *
+  * This software is licensed under terms that can be found in the LICENSE file
+  * in the root directory of this software component.
+  * If no LICENSE file comes with this software, it is provided AS-IS.
+  *
+  ******************************************************************************
+  */
+/* USER CODE END Header */
+/* Includes ------------------------------------------------------------------*/
+#include "main.h"
+
+/* Private includes ----------------------------------------------------------*/
+/* USER CODE BEGIN Includes */
+#include <string.h>
+#include <stdio.h>
+/* USER CODE END Includes */
+
+/* Private typedef -----------------------------------------------------------*/
+/* USER CODE BEGIN PTD */
+typedef struct {
+    uint32_t marker;
+    char     registration[16];
+    char     roll[12];
+    char     name[32];
+} StudentInfo_t;                 /* 64 bytes — word aligned, Sector 6 */
+
+/* Restored to the full Milestone D shape: one averaged voltage per
+ * resolution, plus a validity marker. */
+typedef struct {
+    uint32_t marker;    /* RESULTS_MARKER if valid */
+    uint32_t mv12;       /* voltage in mV at 12-bit resolution */
+    uint32_t mv10;
+    uint32_t mv8;
+    uint32_t mv6;
+} ResultsBlock_t;        /* 20 bytes = 5 words, Sector 7 */
+/* USER CODE END PTD */
+
+/* Private define ------------------------------------------------------------*/
+/* USER CODE BEGIN PD */
+#define PROVISION_IDENTITY_BUILD   0
+
+#define IDENTITY_SECTOR     FLASH_SECTOR_6
+#define IDENTITY_BASE       0x08040000U
+#define RESULTS_SECTOR      FLASH_SECTOR_7
+#define RESULTS_BASE        0x08060000U
+
+#define IDENTITY_MARKER     0xB1010001U
+#define RESULTS_MARKER      0xCAFEBABEU
+#define ERASED_WORD         0xFFFFFFFFU
+
+/* Dummy "acquisition" parameters — replaces ADC_* constants. No ADC1
+ * peripheral is used anywhere in this build; these labels only exist
+ * to pick the same four max-code values the real ADC1_CR1.RES field
+ * would select, so the voltage-conversion math matches Milestone D's
+ * formula exactly. */
+#define NUM_SAMPLES          16U      /* samples averaged per resolution, Sec.8 */
+#define VREF_MV              3300U    /* VREF+ in millivolts (board supply, ~3.3V) */
+
+#define RES_12BIT   0x0U   /* max code 4095 */
+#define RES_10BIT   0x1U   /* max code 1023 */
+#define RES_8BIT    0x2U   /* max code 255  */
+#define RES_6BIT    0x3U   /* max code 63   */
+/* USER CODE END PD */
+
+/* Private macro -------------------------------------------------------------*/
+/* USER CODE BEGIN PM */
+
+/* USER CODE END PM */
+
+/* Private variables ---------------------------------------------------------*/
+UART_HandleTypeDef huart2;
+
+/* USER CODE BEGIN PV */
+/* EDIT before your provisioning build */
+static const StudentInfo_t student_data = {
+    .marker       = IDENTITY_MARKER,
+    .registration = "2023015944",
+    .roll         = "01",
+    .name         = "MD.Jahidul Islam Sarker"
+};
+
+/* Seed for the dummy per-resolution data generator (Milestone D
+ * stand-in). Reseeded on every UART trigger so back-to-back test
+ * runs produce different-but-consistent values. */
+static uint32_t rng_state = 1U;
+/* USER CODE END PV */
+
+/* Private function prototypes -----------------------------------------------*/
+void SystemClock_Config(void);
+static void MX_GPIO_Init(void);
+static void MX_USART2_UART_Init(void);
+/* USER CODE BEGIN PFP */
+
+/* USER CODE END PFP */
+
+/* Private user code ---------------------------------------------------------*/
+/* USER CODE BEGIN 0 */
+
+/* ============================================================
+ *  Flash utilities — HAL equivalents of Milestone B
+ *  (Compare against the register-level Flash_Unlock/Flash_Lock/
+ *  Flash_EraseSector/Flash_WriteWord in the bare-metal build — HAL
+ *  hides the FLASH_CR bit twiddling behind these two calls.)
+ * ============================================================ */
+
+/**
+ * @brief  Erase one Flash sector via HAL_FLASHEx_Erase(). Unlock/lock
+ *         are handled per-call so the interface is never left open
+ *         longer than necessary. Internally this still performs the
+ *         same SER/SNB/STRT/BSY sequence as the register-level
+ *         version — HAL just does it for you.
+ * @param  sectorMacro  FLASH_SECTOR_6 or FLASH_SECTOR_7.
+ */
+static void Flash_EraseSector_HAL(uint32_t sectorMacro)
+{
+  FLASH_EraseInitTypeDef eraseInit;
+  uint32_t sectorError;
+
+  HAL_FLASH_Unlock();
+
+  eraseInit.TypeErase    = FLASH_TYPEERASE_SECTORS;
+  eraseInit.Sector       = sectorMacro;
+  eraseInit.NbSectors    = 1;
+  eraseInit.VoltageRange = FLASH_VOLTAGE_RANGE_3; /* 2.7-3.6V, allows word programming */
+
+  HAL_FLASHEx_Erase(&eraseInit, &sectorError);
+
+  HAL_FLASH_Lock();
+}
+
+/**
+ * @brief  Program a single 32-bit word via HAL_FLASH_Program().
+ *         Internally sets PSIZE/PG the same way the register-level
+ *         Flash_WriteWord() does.
+ */
+static void Flash_WriteWord_HAL(uint32_t addr, uint32_t data)
+{
+  HAL_FLASH_Unlock();
+  HAL_FLASH_Program(FLASH_TYPEPROGRAM_WORD, addr, data);
+  HAL_FLASH_Lock();
+}
+
+/**
+ * @brief  Flash is memory-mapped, so reads never need HAL at all —
+ *         a direct volatile pointer dereference is sufficient, same
+ *         as the register-level Flash_ReadWord().
+ */
+static uint32_t Flash_ReadWord_HAL(uint32_t addr)
+{
+  return *(volatile uint32_t *)addr;
+}
+
+/**
+ * @brief  Write an arbitrary-length block of words, one
+ *         Flash_WriteWord_HAL() call per word. Used for both the
+ *         StudentInfo_t and ResultsBlock_t structs.
+ */
+static void Flash_WriteBlock_HAL(uint32_t addr, const uint32_t *data, uint32_t nwords)
+{
+  for (uint32_t i = 0U; i < nwords; i++)
+  {
+    Flash_WriteWord_HAL(addr + (i * 4U), data[i]);
+  }
+}
+
+/**
+ * @brief  Milestone B checkpoint (TC2/TC3): erase Sector 7, confirm
+ *         erased read-back, write+verify a known pattern, re-erase.
+ * @return 1 if every check passed, 0 on the first mismatch.
+ */
+static uint8_t Flash_SelfTest_HAL(void)
+{
+  Flash_EraseSector_HAL(RESULTS_SECTOR);
+  if (Flash_ReadWord_HAL(RESULTS_BASE) != ERASED_WORD) return 0U;
+
+  Flash_WriteWord_HAL(RESULTS_BASE, 0xDEADBEEFU);
+  if (Flash_ReadWord_HAL(RESULTS_BASE) != 0xDEADBEEFU) return 0U;
+
+  Flash_EraseSector_HAL(RESULTS_SECTOR);
+  return 1U;
+}
+
+/* ============================================================
+ *  Milestone C — identity block (Sector 6, write-once)
+ * ============================================================ */
+
+static void Flash_ProvisionIdentity_HAL(void)
+{
+  Flash_EraseSector_HAL(IDENTITY_SECTOR);
+  Flash_WriteBlock_HAL(IDENTITY_BASE, (const uint32_t *)&student_data,
+                        sizeof(StudentInfo_t) / 4U);
+}
+
+static void UART_SendString(const char *s)
+{
+  HAL_UART_Transmit(&huart2, (uint8_t *)s, (uint16_t)strlen(s), HAL_MAX_DELAY);
+}
+
+/**
+ * @brief  Read the identity block's marker word and print the
+ *         appropriate message: stored details if valid, a
+ *         "not yet provisioned" notice if blank, or a corruption
+ *         warning if the marker is neither.
+ */
+static void Display_Identity_HAL(void)
+{
+  uint32_t marker = Flash_ReadWord_HAL(IDENTITY_BASE);
+  char line[96];
+
+  if (marker == IDENTITY_MARKER)
+  {
+    const StudentInfo_t *info = (const StudentInfo_t *)IDENTITY_BASE;
+    UART_SendString("---- Student Identity (Sector 6) ----\r\n");
+    snprintf(line, sizeof(line), "Registration : %.16s\r\n", info->registration);
+    UART_SendString(line);
+    snprintf(line, sizeof(line), "Roll         : %.12s\r\n", info->roll);
+    UART_SendString(line);
+    snprintf(line, sizeof(line), "Name         : %.32s\r\n", info->name);
+    UART_SendString(line);
+  }
+  else if (marker == ERASED_WORD)
+  {
+    UART_SendString("---- Student Identity ----\r\n");
+    UART_SendString("NOT YET PROVISIONED - rebuild with\r\n");
+    UART_SendString("PROVISION_IDENTITY_BUILD=1 and flash once.\r\n");
+  }
+  else
+  {
+    UART_SendString("---- Student Identity ----\r\n");
+    UART_SendString("Unrecognised marker - identity block may be corrupt.\r\n");
+  }
+  UART_SendString("--------------------------------------\r\n");
+}
+
+/* ============================================================
+ *  Milestone D (DUMMY) — deterministic per-resolution data,
+ *  no ADC hardware/HAL_ADC_* calls involved. Mirrors the
+ *  bare-metal build's Dummy_MeasureResolution_mV() exactly so
+ *  both implementations produce comparable output.
+ * ============================================================ */
+
+/**
+ * @brief  Tiny linear congruential generator, used only to add
+ *         small jitter to simulated ADC samples so the "averaging"
+ *         step below has something to average, matching the shape
+ *         of the real Milestone D acquisition loop.
+ */
+static uint32_t Dummy_Rand(void)
+{
+  rng_state = rng_state * 1103515245U + 12345U;
+  return (rng_state >> 16) & 0x7FFFU;
+}
+
+/**
+ * @brief  Look up the maximum code for a given (simulated) resolution
+ *         — identical role to the real Milestone A/D max-code lookup.
+ */
+static uint32_t Dummy_MaxCode(uint8_t res_bits)
+{
+  switch (res_bits)
+  {
+    case RES_12BIT: return 4095U;
+    case RES_10BIT: return 1023U;
+    case RES_8BIT:  return 255U;
+    case RES_6BIT:  return 63U;
+    default:        return 4095U;
+  }
+}
+
+/**
+ * @brief  Simulate NUM_SAMPLES raw ADC codes at the given resolution
+ *         and convert their average to millivolts — same formula the
+ *         real ADC path uses (V = avg_code/max_code * VREF), just
+ *         with avg_code coming from Dummy_Rand() instead of
+ *         HAL_ADC_GetValue().
+ * @param  res_bits           One of RES_12BIT / 10BIT / 8BIT / 6BIT.
+ * @param  base_fraction_ppt  Simulated "pot position" as parts-per-
+ *                             thousand (0-1000), shared across all
+ *                             four resolutions in one test run so the
+ *                             four results stay consistent with each
+ *                             other.
+ * @return Averaged voltage in millivolts.
+ */
+static uint32_t Dummy_MeasureResolution_mV(uint8_t res_bits, uint32_t base_fraction_ppt)
+{
+  uint32_t max_code    = Dummy_MaxCode(res_bits);
+  uint32_t target_code = (max_code * base_fraction_ppt) / 1000U;
+  uint32_t sum = 0U;
+
+  for (uint32_t i = 0U; i < NUM_SAMPLES; i++)
+  {
+    int32_t jitter = (int32_t)(Dummy_Rand() % 3U) - 1;  /* -1, 0, or +1 LSB of noise */
+    int32_t sample = (int32_t)target_code + jitter;
+    if (sample < 0) sample = 0;
+    if ((uint32_t)sample > max_code) sample = (int32_t)max_code;
+    sum += (uint32_t)sample;
+  }
+
+  uint32_t avg_code = sum / NUM_SAMPLES;
+  return (avg_code * VREF_MV) / max_code;
+}
+
+/**
+ * @brief  Read the results block's marker word and print the stored
+ *         per-resolution voltages if valid, or "no previous test
+ *         data" if blank.
+ */
+static void Display_Results_HAL(void)
+{
+  uint32_t marker = Flash_ReadWord_HAL(RESULTS_BASE);
+  char line[64];
+
+  UART_SendString("---- Last Test Results (Sector 7) ----\r\n");
+  if (marker == RESULTS_MARKER)
+  {
+    const ResultsBlock_t *r = (const ResultsBlock_t *)RESULTS_BASE;
+    snprintf(line, sizeof(line), "12-bit: %lu.%03lu V\r\n",
+             (unsigned long)(r->mv12 / 1000U), (unsigned long)(r->mv12 % 1000U));
+    UART_SendString(line);
+    snprintf(line, sizeof(line), "10-bit: %lu.%03lu V\r\n",
+             (unsigned long)(r->mv10 / 1000U), (unsigned long)(r->mv10 % 1000U));
+    UART_SendString(line);
+    snprintf(line, sizeof(line), " 8-bit: %lu.%03lu V\r\n",
+             (unsigned long)(r->mv8 / 1000U), (unsigned long)(r->mv8 % 1000U));
+    UART_SendString(line);
+    snprintf(line, sizeof(line), " 6-bit: %lu.%03lu V\r\n",
+             (unsigned long)(r->mv6 / 1000U), (unsigned long)(r->mv6 % 1000U));
+    UART_SendString(line);
+  }
+  else
+  {
+    UART_SendString("No previous test data.\r\n");
+  }
+  UART_SendString("---------------------------------------\r\n");
+}
+
+/**
+ * @brief  Milestone D (dummy): sweep all four resolutions using
+ *         simulated data, average NUM_SAMPLES readings at each,
+ *         convert to millivolts, and store all four results into
+ *         Sector 7 (overwriting whatever was there). The simulated
+ *         "pot position" changes on every call so repeated runs
+ *         produce different-but-plausible values (see TC9).
+ */
+static void Run_MultiResolutionTest_Dummy_HAL(void)
+{
+  ResultsBlock_t result;
+
+  /* Reseed and pick a new simulated pot position every run so
+   * back-to-back UART triggers don't produce identical results. */
+  rng_state ^= (rng_state << 13) ^ 0x9E3779B9U;
+  uint32_t base_fraction_ppt = Dummy_Rand() % 1001U; /* 0..1000 */
+
+  UART_SendString("\r\n>> Running multi-resolution test suite (DUMMY DATA, no ADC)...\r\n");
+
+  result.marker = RESULTS_MARKER;
+  result.mv12   = Dummy_MeasureResolution_mV(RES_12BIT, base_fraction_ppt);
+  result.mv10   = Dummy_MeasureResolution_mV(RES_10BIT, base_fraction_ppt);
+  result.mv8    = Dummy_MeasureResolution_mV(RES_8BIT,  base_fraction_ppt);
+  result.mv6    = Dummy_MeasureResolution_mV(RES_6BIT,  base_fraction_ppt);
+
+  Flash_EraseSector_HAL(RESULTS_SECTOR);
+  Flash_WriteBlock_HAL(RESULTS_BASE, (const uint32_t *)&result,
+                        sizeof(ResultsBlock_t) / 4U);
+
+  UART_SendString(">> Test suite complete, results stored.\r\n");
+}
+
+/**
+ * @brief  Debounce a burst of UART bytes from one keypress: return
+ *         once 50ms have passed with no new byte arriving.
+ */
+static void UART_DebounceFlush(void)
+{
+  uint8_t dump;
+  uint32_t start = HAL_GetTick();
+  while ((HAL_GetTick() - start) < 50U)
+  {
+    if (HAL_UART_Receive(&huart2, &dump, 1, 1) == HAL_OK)
+    {
+      start = HAL_GetTick(); /* activity restarts the quiet timer */
+    }
+  }
+}
+/* USER CODE END 0 */
+
+/**
+  * @brief  The application entry point.
+  * @retval int
+  */
+int main(void)
+{
+
+  /* USER CODE BEGIN 1 */
+
+  /* USER CODE END 1 */
+
+  /* MCU Configuration--------------------------------------------------------*/
+
+  /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
+  HAL_Init();
+
+  /* USER CODE BEGIN Init */
+
+  /* USER CODE END Init */
+
+  /* Configure the system clock */
+  SystemClock_Config();
+
+  /* USER CODE BEGIN SysInit */
+
+  /* USER CODE END SysInit */
+
+  /* Initialize all configured peripherals */
+  MX_GPIO_Init();
+  MX_USART2_UART_Init();
+  /* USER CODE BEGIN 2 */
+  UART_SendString("\r\n========================================\r\n");
+  UART_SendString(" CSE 2206 - Lab 04 (Flash-only + dummy D)\r\n");
+  UART_SendString(" HAL-Based, STM32F446RE\r\n");
+  UART_SendString("========================================\r\n");
+
+#if PROVISION_IDENTITY_BUILD
+  UART_SendString("\r\n*** PROVISIONING BUILD ***\r\n");
+  Flash_ProvisionIdentity_HAL();
+  UART_SendString("Identity written to Sector 6.\r\n");
+  UART_SendString("Rebuild with PROVISION_IDENTITY_BUILD=0 and reflash.\r\n");
+  while (1) { HAL_Delay(1000); }
+#endif
+
+  Display_Identity_HAL();
+  Display_Results_HAL();
+  UART_SendString("\r\nSend any byte over UART to run the test suite...\r\n");
+  /* USER CODE END 2 */
+
+  /* Infinite loop */
+  /* USER CODE BEGIN WHILE */
+  while (1)
+  {
+    /* USER CODE END WHILE */
+
+    /* USER CODE BEGIN 3 */
+    {
+      uint8_t rx;
+      if (HAL_UART_Receive(&huart2, &rx, 1, 10) == HAL_OK)
+      {
+        (void)rx;
+        UART_DebounceFlush();
+        Run_MultiResolutionTest_Dummy_HAL();
+        Display_Results_HAL();
+        UART_SendString("\r\nSend any byte to re-run the test suite...\r\n");
+      }
+    }
+  }
+  /* USER CODE END 3 */
+}
+
+/**
+  * @brief System Clock Configuration
+  * @retval None
+  */
+void SystemClock_Config(void)
+{
+  RCC_OscInitTypeDef RCC_OscInitStruct = {0};
+  RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+
+  /** Configure the main internal regulator output voltage
+  */
+  __HAL_RCC_PWR_CLK_ENABLE();
+  __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE3);
+
+  /** Initializes the RCC Oscillators according to the specified parameters
+  * in the RCC_OscInitTypeDef structure.
+  */
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
+  RCC_OscInitStruct.HSIState = RCC_HSI_ON;
+  RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
+  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_NONE;
+  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Initializes the CPU, AHB and APB buses clocks
+  */
+  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
+                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
+  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_HSI;
+  RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
+  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV1;
+  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
+
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_0) != HAL_OK)
+  {
+    Error_Handler();
+  }
+}
+
+/**
+  * @brief USART2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_USART2_UART_Init(void)
+{
+
+  /* USER CODE BEGIN USART2_Init 0 */
+
+  /* USER CODE END USART2_Init 0 */
+
+  /* USER CODE BEGIN USART2_Init 1 */
+
+  /* USER CODE END USART2_Init 1 */
+  huart2.Instance = USART2;
+  huart2.Init.BaudRate = 115200;
+  huart2.Init.WordLength = UART_WORDLENGTH_8B;
+  huart2.Init.StopBits = UART_STOPBITS_1;
+  huart2.Init.Parity = UART_PARITY_NONE;
+  huart2.Init.Mode = UART_MODE_TX_RX;
+  huart2.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart2.Init.OverSampling = UART_OVERSAMPLING_16;
+  if (HAL_UART_Init(&huart2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN USART2_Init 2 */
+
+  /* USER CODE END USART2_Init 2 */
+
+}
+
+/**
+  * @brief GPIO Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_GPIO_Init(void)
+{
+  /* USER CODE BEGIN MX_GPIO_Init_1 */
+
+  /* USER CODE END MX_GPIO_Init_1 */
+
+  /* GPIO Ports Clock Enable */
+  __HAL_RCC_GPIOA_CLK_ENABLE();
+
+  /* USER CODE BEGIN MX_GPIO_Init_2 */
+
+  /* USER CODE END MX_GPIO_Init_2 */
+}
+
+/* USER CODE BEGIN 4 */
+
+/* USER CODE END 4 */
+
+/**
+  * @brief  This function is executed in case of error occurrence.
+  * @retval None
+  */
+void Error_Handler(void)
+{
+  /* USER CODE BEGIN Error_Handler_Debug */
+  /* User can add his own implementation to report the HAL error return state */
+  __disable_irq();
+  while (1)
+  {
+  }
+  /* USER CODE END Error_Handler_Debug */
+}
+#ifdef USE_FULL_ASSERT
+/**
+  * @brief  Reports the name of the source file and the source line number
+  *         where the assert_param error has occurred.
+  * @param  file: pointer to the source file name
+  * @param  line: assert_param error line source number
+  * @retval None
+  */
+void assert_failed(uint8_t *file, uint32_t line)
+{
+  /* USER CODE BEGIN 6 */
+  /* User can add his own implementation to report the file name and line number,
+     ex: printf("Wrong parameters value: file %s on line %d\r\n", file, line) */
+  /* USER CODE END 6 */
+}
+#endif /* USE_FULL_ASSERT */

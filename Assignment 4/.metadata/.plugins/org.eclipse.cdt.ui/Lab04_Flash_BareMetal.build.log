@@ -1,0 +1,16 @@
+23:30:29 **** Incremental Build of configuration Debug for project Lab04_Flash_BareMetal ****
+make -j9 all 
+arm-none-eabi-gcc -o "Lab04_Flash_BareMetal.elf" @"objects.list"   -mcpu=cortex-m4 -T"/Users/md.jahidulislam/STM32CubeIDE/Assignment 4/Lab04_Flash_BareMetal/STM32F446RETX_FLASH.ld" --specs=nosys.specs -Wl,-Map="Lab04_Flash_BareMetal.map" -Wl,--gc-sections -static --specs=nano.specs -mfpu=fpv4-sp-d16 -mfloat-abi=hard -mthumb -Wl,--start-group -lc -lm -Wl,--end-group
+Finished building target: Lab04_Flash_BareMetal.elf
+ 
+arm-none-eabi-size  Lab04_Flash_BareMetal.elf 
+arm-none-eabi-objdump -h -S Lab04_Flash_BareMetal.elf  > "Lab04_Flash_BareMetal.list"
+   text	   data	    bss	    dec	    hex	filename
+   6412	     80	   1904	   8396	   20cc	Lab04_Flash_BareMetal.elf
+Finished building: default.size.stdout
+ 
+Finished building: Lab04_Flash_BareMetal.list
+ 
+
+23:30:30 Build Finished. 0 errors, 0 warnings. (took 799ms)
+

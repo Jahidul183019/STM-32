@@ -4,7 +4,7 @@
 ../Core/Src/main.c:153:6:BMP280_BurstRead	32	static
 ../Core/Src/main.c:166:6:BMP280_ReadCalibration	32	static
 ../Core/Src/main.c:187:9:BMP280_Compensate_T	32	static
-../Core/Src/main.c:205:10:BMP280_Compensate_P	336	static
+../Core/Src/main.c:205:10:BMP280_Compensate_P	328	static
 ../Core/Src/main.c:236:6:SampleAndCompensate	24	static
 ../Core/Src/main.c:256:9:BMP280_Init	16	static
 ../Core/Src/main.c:281:6:RunVerificationTests	160	static
