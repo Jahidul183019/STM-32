@@ -1,4 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<session version="1.0">
-<refactoring comment="Delete resource &apos;Lab04_ADC_Flash_BareMetal&apos;" deleteContents="false" description="Delete resource &apos;Lab04_ADC_Flash_BareMetal&apos;" element1="/Lab04_ADC_Flash_BareMetal" flags="7" id="org.eclipse.ltk.core.refactoring.delete.resources" resources="1" stamp="1787997140200"/>
-</session>
